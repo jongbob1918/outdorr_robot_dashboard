@@ -14,6 +14,11 @@
 1. 국토정보플랫폼에서 내려받은 서오릉 정사영상 TIFF를 자체 호스팅
 2. 국토정보플랫폼에서 발급받은 운영용 API 키로 영상지도 WMTS 사용
 
+일반 지도 모드는 OpenFreeMap 공개 인스턴스를 사용합니다. OpenFreeMap 공식
+안내상 상업적 이용이 가능하고 API 키나 요청 수 제한은 없지만, 귀속표시가
+필요하며 SLA 보장은 없습니다. 운영 안정성이 중요한 상용 관제에서는
+OpenFreeMap MBTiles를 자체 호스팅하거나 SLA가 있는 공급자로 교체할 수 있습니다.
+
 ## 국가유산청 지정유산 공간정보
 
 - 데이터: `고양 서오릉` 지정유산 SHP
@@ -53,6 +58,22 @@
 권장 출처표시:
 
 > 영상 © 국토교통부 국토지리정보원 / 경계 © 국가유산청
+
+## 일반 지도
+
+- 스타일·타일: OpenFreeMap Positron
+- 데이터: OpenStreetMap
+- 공식 안내: https://openfreemap.org/
+- 연동 방법: https://openfreemap.org/quick_start/
+- 이용 조건: https://openfreemap.org/tos/
+- 상업적 이용: 가능
+- 조건: OpenMapTiles 및 OpenStreetMap 귀속표시 유지
+- 운영 참고: 공개 인스턴스는 무료이나 SLA가 없으므로 상용 관제의 가용성
+  요구사항에 맞춰 자체 호스팅 여부 검토
+
+현재 UI의 일반 지도 하단에는 다음 귀속표시가 표시됩니다.
+
+> OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors
 
 ## 애플리케이션 코드와 의존성
 

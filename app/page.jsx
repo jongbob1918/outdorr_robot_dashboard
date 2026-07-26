@@ -7,6 +7,7 @@ import {
   ArrowRight,
   ArrowUp,
   Ban,
+  BellRing,
   Bot,
   Check,
   ChevronLeft,
@@ -19,6 +20,7 @@ import {
   Gauge,
   Layers3,
   LocateFixed,
+  Map as MapIcon,
   MapPin,
   Minus,
   MousePointerClick,
@@ -29,6 +31,7 @@ import {
   RotateCcw,
   RotateCw,
   Satellite,
+  Save,
   Send,
   SquareTerminal,
   Trash2,
@@ -57,18 +60,14 @@ import {
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 const INITIAL_POSE = { x: -22.4, y: -8.8, yaw: 32 };
+const ALIGNMENT_STORAGE_KEY = "seooreung-map-alignment-v1";
+const GENERAL_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
+const ROBOT_EVENTS = [
+  { id: "battery-check", point: [-68, 24], severity: "info" },
+  { id: "surface-alert", point: [42, -30], severity: "warning" },
+  { id: "inspection", point: [82, 48], severity: "info" },
+];
 const EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
-const MAP_STYLE = {
-  version: 8,
-  sources: {},
-  layers: [
-    {
-      id: "background",
-      type: "background",
-      paint: { "background-color": "#070b0e" },
-    },
-  ],
-};
 const EPSG_5179 =
   "+proj=tmerc +lat_0=38 +lon_0=127.5 +k=0.9996 +x_0=1000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs";
 const EPSG_4326 = "+proj=longlat +datum=WGS84 +no_defs";
@@ -149,10 +148,92 @@ function draftPointsGeoJSON(points, transform) {
   };
 }
 
+function eventGeoJSON(transform) {
+  return {
+    type: "FeatureCollection",
+    features: ROBOT_EVENTS.map((event) => ({
+      type: "Feature",
+      properties: { id: event.id, severity: event.severity },
+      geometry: {
+        type: "Point",
+        coordinates: localToLngLat(event.point, transform),
+      },
+    })),
+  };
+}
+
+function LayerControl({
+  baseMap,
+  setBaseMap,
+  layerVisibility,
+  toggleLayer,
+}) {
+  const [open, setOpen] = useState(false);
+  const layers = [
+    { id: "forbidden", label: "금지구역", icon: Ban },
+    { id: "robotPose", label: "로봇 포즈", icon: Bot },
+    { id: "events", label: "이벤트", icon: BellRing },
+  ];
+  return (
+    <div className={`layer-control ${open ? "open" : ""}`}>
+      <button
+        className="layer-control-trigger"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <Layers3 size={17} />레이어
+      </button>
+      {open && (
+        <div className="layer-control-panel">
+          <div className="layer-panel-heading">
+            <span>BASE MAP</span><small>지도 유형</small>
+          </div>
+          <div className="base-map-options">
+            <button
+              className={baseMap === "satellite" ? "active" : ""}
+              onClick={() => setBaseMap("satellite")}
+            >
+              <Satellite size={16} />위성
+            </button>
+            <button
+              className={baseMap === "general" ? "active" : ""}
+              onClick={() => setBaseMap("general")}
+            >
+              <MapIcon size={16} />일반
+            </button>
+          </div>
+          <div className="layer-panel-heading overlays">
+            <span>OVERLAYS</span><small>표시 레이어</small>
+          </div>
+          <div className="layer-switches">
+            {layers.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                role="switch"
+                aria-checked={layerVisibility[id]}
+                onClick={() => toggleLayer(id)}
+              >
+                <span><Icon size={15} />{label}</span>
+                <i className={layerVisibility[id] ? "active" : ""} />
+              </button>
+            ))}
+          </div>
+          <p>일반 지도: OpenFreeMap · OpenStreetMap 데이터</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MapCanvas({
   toolMode,
   pose,
   transform,
+  publishing,
+  baseMap,
+  setBaseMap,
+  layerVisibility,
+  toggleLayer,
   sidebarCollapsed,
   interactionMode,
   onCoordinateClick,
@@ -165,15 +246,27 @@ function MapCanvas({
   const mapRef = useRef(null);
   const nationalDataRef = useRef(null);
   const aerialTileIdsRef = useRef(new Set());
-  const stateRef = useRef({ interactionMode, onCoordinateClick, transform });
+  const satelliteCameraRef = useRef(null);
+  const stateRef = useRef({
+    interactionMode,
+    onCoordinateClick,
+    transform,
+    baseMap,
+  });
   const [mapReady, setMapReady] = useState(false);
   const [dataError, setDataError] = useState("");
   const [dataInfo, setDataInfo] = useState(null);
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [zoom, setZoom] = useState(14.8);
   const [aerialLevel, setAerialLevel] = useState(null);
+  const [generalFeatureCount, setGeneralFeatureCount] = useState(0);
 
-  stateRef.current = { interactionMode, onCoordinateClick, transform };
+  stateRef.current = {
+    interactionMode,
+    onCoordinateClick,
+    transform,
+    baseMap,
+  };
 
   const refreshGrid = useCallback(() => {
     const map = mapRef.current;
@@ -209,8 +302,12 @@ function MapCanvas({
           id,
           type: "raster",
           source: id,
+          layout: {
+            visibility:
+              stateRef.current.baseMap === "satellite" ? "visible" : "none",
+          },
           paint: {
-            "raster-opacity": 0.94,
+            "raster-opacity": 1,
             "raster-brightness-min": 0.04,
             "raster-brightness-max": 0.82,
             "raster-contrast": 0.1,
@@ -252,7 +349,7 @@ function MapCanvas({
         setDataInfo(metadata);
         const map = new maplibregl.Map({
           container: containerRef.current,
-          style: MAP_STYLE,
+          style: GENERAL_STYLE_URL,
           center: metadata.heritage.center,
           zoom: 14.8,
           bearing: 0,
@@ -280,6 +377,50 @@ function MapCanvas({
               "line-width": 2,
               "line-opacity": 0.82,
               "line-dasharray": [2, 1.5],
+            },
+          });
+
+          addGeoJSONSource(map, "robot-events");
+          map.addLayer({
+            id: "robot-events-halo",
+            type: "circle",
+            source: "robot-events",
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": 12,
+              "circle-color": [
+                "match",
+                ["get", "severity"],
+                "warning",
+                "rgba(255, 142, 91, .2)",
+                "rgba(79, 169, 255, .18)",
+              ],
+              "circle-stroke-width": 1,
+              "circle-stroke-color": [
+                "match",
+                ["get", "severity"],
+                "warning",
+                "#ff8e5b",
+                "#56aaff",
+              ],
+            },
+          });
+          map.addLayer({
+            id: "robot-events-dot",
+            type: "circle",
+            source: "robot-events",
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": 4,
+              "circle-color": [
+                "match",
+                ["get", "severity"],
+                "warning",
+                "#ff8e5b",
+                "#56aaff",
+              ],
+              "circle-stroke-width": 2,
+              "circle-stroke-color": "#071016",
             },
           });
 
@@ -471,6 +612,15 @@ function MapCanvas({
           refreshGrid();
           refreshAerialTiles();
         });
+        map.on("idle", () => {
+          setGeneralFeatureCount(
+            stateRef.current.baseMap === "general" && map.getSource("openmaptiles")
+              ? map.queryRenderedFeatures().filter(
+                  (feature) => feature.source === "openmaptiles",
+                ).length
+              : 0,
+          );
+        });
         map.on("click", (event) => {
           const current = stateRef.current;
           if (!current.interactionMode) return;
@@ -500,7 +650,10 @@ function MapCanvas({
     if (!mapReady || !map) return;
     refreshAerialTiles();
     const align = toolMode === "align" && overlayVisible ? "visible" : "none";
-    const poseVisible = toolMode === "align" ? "none" : "visible";
+    const poseVisible =
+      publishing && layerVisibility.robotPose ? "visible" : "none";
+    const forbiddenVisible = layerVisibility.forbidden ? "visible" : "none";
+    const eventsVisible = layerVisibility.events ? "visible" : "none";
     const mission = toolMode === "mission" ? "visible" : "none";
     ["robot-grid-line", "robot-obstacles-fill", "robot-obstacles-line", "robot-axes-line"].forEach(
       (id) => map.setLayoutProperty(id, "visibility", align),
@@ -510,18 +663,39 @@ function MapCanvas({
       "robot-pose-halo",
       "robot-pose-dot",
     ].forEach((id) => map.setLayoutProperty(id, "visibility", poseVisible));
-    [
-      "forbidden-fill",
-      "forbidden-line",
-      "planned-route-halo",
-      "planned-route-line",
-      "goal-halo",
-      "goal-dot",
-    ].forEach((id) => map.setLayoutProperty(id, "visibility", mission));
+    ["forbidden-fill", "forbidden-line"].forEach((id) =>
+      map.setLayoutProperty(id, "visibility", forbiddenVisible),
+    );
+    ["planned-route-halo", "planned-route-line", "goal-halo", "goal-dot"].forEach(
+      (id) => map.setLayoutProperty(id, "visibility", mission),
+    );
+    ["robot-events-halo", "robot-events-dot"].forEach((id) =>
+      map.setLayoutProperty(id, "visibility", eventsVisible),
+    );
     map.setLayoutProperty(
       "draft-points-dot",
       "visibility",
-      toolMode === "mission" && interactionMode === "forbidden" ? "visible" : "none",
+      toolMode === "mission" &&
+        interactionMode === "forbidden" &&
+        layerVisibility.forbidden
+        ? "visible"
+        : "none",
+    );
+    for (const id of aerialTileIdsRef.current) {
+      if (map.getLayer(id)) {
+        map.setLayoutProperty(
+          id,
+          "visibility",
+          baseMap === "satellite" ? "visible" : "none",
+        );
+      }
+    }
+    setGeneralFeatureCount(
+      baseMap === "general" && map.getSource("openmaptiles")
+        ? map.queryRenderedFeatures().filter(
+            (feature) => feature.source === "openmaptiles",
+          ).length
+        : 0,
     );
 
     if (toolMode === "align") {
@@ -539,7 +713,19 @@ function MapCanvas({
       });
     }
     refreshGrid();
-  }, [interactionMode, mapReady, overlayVisible, refreshAerialTiles, refreshGrid, sidebarCollapsed, toolMode, transform]);
+  }, [
+    baseMap,
+    interactionMode,
+    layerVisibility,
+    mapReady,
+    overlayVisible,
+    publishing,
+    refreshAerialTiles,
+    refreshGrid,
+    sidebarCollapsed,
+    toolMode,
+    transform,
+  ]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -548,6 +734,7 @@ function MapCanvas({
     setSourceData(map, "robot-axes", axisGeoJSON(transform));
     setSourceData(map, "robot-pose", poseGeoJSON(pose, transform));
     setSourceData(map, "robot-heading", headingGeoJSON(pose, transform));
+    setSourceData(map, "robot-events", eventGeoJSON(transform));
     setSourceData(map, "planned-route", routeGeoJSON(path, transform));
     setSourceData(map, "goal-point", pointGeoJSON(goal, transform));
     setSourceData(map, "forbidden-zones", forbiddenGeoJSON(forbiddenZones, transform, draftZone));
@@ -563,8 +750,29 @@ function MapCanvas({
   const zoomBy = (amount) => {
     const map = mapRef.current;
     if (!map) return;
-    map.easeTo({ zoom: Math.min(20, Math.max(12, map.getZoom() + amount)), duration: 220 });
+    const maximumZoom = baseMap === "general" ? 16 : 20;
+    map.easeTo({
+      zoom: Math.min(maximumZoom, Math.max(12, map.getZoom() + amount)),
+      duration: 220,
+    });
     window.setTimeout(refreshAerialTiles, 260);
+  };
+
+  const changeBaseMap = (nextBaseMap) => {
+    const map = mapRef.current;
+    if (!map || nextBaseMap === baseMap) return;
+    if (nextBaseMap === "general") {
+      satelliteCameraRef.current = {
+        center: map.getCenter().toArray(),
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      };
+      if (map.getZoom() > 15) map.easeTo({ zoom: 15, duration: 420 });
+    } else if (satelliteCameraRef.current) {
+      map.easeTo({ ...satelliteCameraRef.current, duration: 420 });
+    }
+    setBaseMap(nextBaseMap);
   };
 
   const resetView = () => {
@@ -592,6 +800,9 @@ function MapCanvas({
       data-aerial-matrix={aerialLevel?.matrix ?? ""}
       data-aerial-resolution={aerialLevel?.resolutionMetersPerPixel ?? ""}
       data-tool-mode={toolMode}
+      data-base-map={baseMap}
+      data-pose-published={publishing && layerVisibility.robotPose ? "visible" : "hidden"}
+      data-general-features={generalFeatureCount}
     >
       <div ref={containerRef} className="map-container" data-interaction-mode={interactionMode || "idle"} />
 
@@ -617,6 +828,13 @@ function MapCanvas({
         </span>
         <span className="source-tag">EPSG:5179</span>
       </div>
+
+      <LayerControl
+        baseMap={baseMap}
+        setBaseMap={changeBaseMap}
+        layerVisibility={layerVisibility}
+        toggleLayer={toggleLayer}
+      />
 
       {toolMode === "align" && (
         <button
@@ -647,14 +865,24 @@ function MapCanvas({
 
       <div className="map-state-label">
         <span className="green-dot" />
-        {toolMode === "align" ? "INFINITE MAP FRAME" : toolMode === "pose" ? "POSE ONLY ON GEO MAP" : "A* MISSION EDITOR"}
+        {toolMode === "align"
+          ? "INFINITE MAP FRAME"
+          : toolMode === "pose"
+            ? publishing
+              ? "POSE STREAM · 10 HZ"
+              : "POSE STREAM · STANDBY"
+            : "A* MISSION EDITOR"}
       </div>
 
       <div className="national-attribution">
-        <span>
-          영상 © 국토지리정보원 · 2024 항공사진 ·
-          {" "}{aerialLevel ? `${aerialLevel.resolutionMetersPerPixel.toFixed(3)} m/px` : "loading"}
-        </span>
+        {baseMap === "satellite" ? (
+          <span>
+            영상 © 국토지리정보원 · 2024 항공사진 ·
+            {" "}{aerialLevel ? `${aerialLevel.resolutionMetersPerPixel.toFixed(3)} m/px` : "loading"}
+          </span>
+        ) : (
+          <span>일반지도 © OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</span>
+        )}
         <i />
         <span>경계 © 국가유산청 · 지정유산 SHP</span>
       </div>
@@ -662,7 +890,15 @@ function MapCanvas({
   );
 }
 
-function TransformEditor({ transform, onShift, onRotate, onReset }) {
+function TransformEditor({
+  transform,
+  onShift,
+  onRotate,
+  onReset,
+  onSave,
+  isSaved,
+  savedAt,
+}) {
   return (
     <section className="transform-editor">
       <div className="transform-heading">
@@ -672,7 +908,10 @@ function TransformEditor({ transform, onShift, onRotate, onReset }) {
           <strong>로봇 좌표계 정렬</strong>
         </div>
       </div>
-      <p>투명한 무한 map 그리드를 항공사진 위에서 이동·회전합니다.</p>
+      <p>
+        투명한 무한 map 그리드를 항공사진 위에서 이동·회전합니다.
+        방향키 1m · Shift+방향키 5m
+      </p>
       <div className="transform-readout">
         <div><small>ORIGIN LNG</small><b>{transform.originLng.toFixed(6)}</b></div>
         <div><small>ORIGIN LAT</small><b>{transform.originLat.toFixed(6)}</b></div>
@@ -690,7 +929,20 @@ function TransformEditor({ transform, onShift, onRotate, onReset }) {
           <button onClick={() => onRotate(-5)}><RotateCcw size={16} />-5°</button>
           <button onClick={() => onRotate(5)}><RotateCw size={16} />+5°</button>
           <button className="transform-reset" onClick={onReset}><Crosshair size={16} />초기화</button>
+          <button className="alignment-save-button" onClick={onSave}>
+            <Save size={16} />{isSaved ? "저장됨" : "정합 저장"}
+          </button>
         </div>
+      </div>
+      <div className={`alignment-save-status ${isSaved ? "saved" : "dirty"}`}>
+        <i />
+        <span>
+          {isSaved
+            ? savedAt
+              ? `${savedAt} · 새로고침 후 자동 복원`
+              : "저장된 정합값"
+            : "변경사항이 저장되지 않았습니다"}
+        </span>
       </div>
       <div className="transform-legend">
         <span><i className="axis-x" />X축</span>
@@ -797,6 +1049,12 @@ function SimulatorSidebar({
   onShift,
   onRotate,
   onTransformReset,
+  onSaveAlignment,
+  isAlignmentSaved,
+  alignmentSavedAt,
+  onMove,
+  activeKey,
+  onResetPose,
   interactionMode,
   setInteractionMode,
   draftZone,
@@ -847,6 +1105,9 @@ function SimulatorSidebar({
               onShift={onShift}
               onRotate={onRotate}
               onReset={onTransformReset}
+              onSave={onSaveAlignment}
+              isSaved={isAlignmentSaved}
+              savedAt={alignmentSavedAt}
             />
           )}
 
@@ -854,6 +1115,13 @@ function SimulatorSidebar({
             <>
               <div className="topic-card">
                 <span><Radio size={15} />ROS 2 TOPIC</span><code>/robot_pose</code>
+              </div>
+              <div className={`pose-map-state ${publishing ? "live" : ""}`}>
+                <Eye size={15} />
+                <span>
+                  <small>MAIN MAP POSE</small>
+                  <b>{publishing ? "표시 중 · 10 Hz" : "숨김 · 발행 대기"}</b>
+                </span>
               </div>
               <section className="sidebar-section compact">
                 <div className="section-title">
@@ -865,6 +1133,12 @@ function SimulatorSidebar({
                   <PoseValue label="YAW" value={pose.yaw.toFixed(1)} unit="deg" />
                 </div>
               </section>
+              <ControlDock
+                onMove={onMove}
+                activeKey={activeKey}
+                onReset={onResetPose}
+                compact
+              />
               <div className="publish-actions">
                 <button className="publish-button" onClick={() => setPublishing(true)} disabled={publishing}>
                   <Send size={17} />포즈 발행
@@ -925,9 +1199,9 @@ function KeyButton({ label, icon: Icon, hint, onTrigger, active }) {
   );
 }
 
-function ControlDock({ onMove, activeKey, onReset }) {
+function ControlDock({ onMove, activeKey, onReset, compact = false }) {
   return (
-    <div className="control-dock">
+    <div className={`control-dock ${compact ? "sidebar-control-dock" : ""}`}>
       <div className="dock-copy"><small>MANUAL CONTROL</small><strong>로봇 포즈 이동</strong></div>
       <div className="keyboard-cluster">
         <KeyButton label="Q" hint="왼쪽 평행 이동" onTrigger={() => onMove("strafe-left")} active={activeKey === "q"} />
@@ -987,6 +1261,8 @@ export default function App() {
   const [toolMode, setToolMode] = useState("pose");
   const [pose, setPose] = useState(INITIAL_POSE);
   const [transform, setTransform] = useState(DEFAULT_TRANSFORM);
+  const [savedTransform, setSavedTransform] = useState(DEFAULT_TRANSFORM);
+  const [alignmentSavedAt, setAlignmentSavedAt] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [sequence, setSequence] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -996,6 +1272,41 @@ export default function App() {
   const [path, setPath] = useState([]);
   const [forbiddenZones, setForbiddenZones] = useState([]);
   const [draftZone, setDraftZone] = useState([]);
+  const [baseMap, setBaseMap] = useState("satellite");
+  const [layerVisibility, setLayerVisibility] = useState({
+    forbidden: true,
+    robotPose: true,
+    events: true,
+  });
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(ALIGNMENT_STORAGE_KEY) ?? "null",
+      );
+      const candidate = stored?.transform;
+      if (
+        candidate &&
+        ["originLng", "originLat", "rotationDeg"].every((key) =>
+          Number.isFinite(candidate[key]),
+        )
+      ) {
+        setTransform(candidate);
+        setSavedTransform(candidate);
+        setAlignmentSavedAt(stored.savedAtLabel ?? "저장값 복원");
+      }
+    } catch {
+      window.localStorage.removeItem(ALIGNMENT_STORAGE_KEY);
+    }
+  }, []);
+
+  const isAlignmentSaved = useMemo(
+    () =>
+      ["originLng", "originLat", "rotationDeg"].every(
+        (key) => Math.abs(transform[key] - savedTransform[key]) < 1e-10,
+      ),
+    [savedTransform, transform],
+  );
 
   const moveRobot = useCallback((action) => {
     setPose((current) => {
@@ -1060,12 +1371,50 @@ export default function App() {
     if (goal) setPath(planAStar([pose.x, pose.y], goal, forbiddenZones));
   }, [forbiddenZones, goal, pose.x, pose.y]);
 
-  const shiftTransform = (east, north) => {
+  const shiftTransform = useCallback((east, north) => {
     setTransform((current) => ({
       ...current,
       originLng: current.originLng + east / (111_320 * Math.cos((current.originLat * Math.PI) / 180)),
       originLat: current.originLat + north / 110_540,
     }));
+  }, []);
+
+  useEffect(() => {
+    if (toolMode !== "align") return undefined;
+    const directions = {
+      ArrowUp: [0, 1],
+      ArrowDown: [0, -1],
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+    };
+    const handleAlignmentKey = (event) => {
+      if (!directions[event.key] || event.target instanceof HTMLInputElement) return;
+      event.preventDefault();
+      const distance = event.shiftKey ? 5 : 1;
+      const [east, north] = directions[event.key];
+      shiftTransform(east * distance, north * distance);
+    };
+    window.addEventListener("keydown", handleAlignmentKey);
+    return () => window.removeEventListener("keydown", handleAlignmentKey);
+  }, [shiftTransform, toolMode]);
+
+  const saveAlignment = () => {
+    const savedAtLabel = new Intl.DateTimeFormat("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date());
+    window.localStorage.setItem(
+      ALIGNMENT_STORAGE_KEY,
+      JSON.stringify({ transform, savedAtLabel }),
+    );
+    setSavedTransform(transform);
+    setAlignmentSavedAt(savedAtLabel);
+  };
+
+  const toggleLayer = (id) => {
+    setLayerVisibility((current) => ({ ...current, [id]: !current[id] }));
   };
 
   const setMode = (mode) => {
@@ -1126,6 +1475,11 @@ export default function App() {
           toolMode={toolMode}
           pose={pose}
           transform={transform}
+          publishing={publishing}
+          baseMap={baseMap}
+          setBaseMap={setBaseMap}
+          layerVisibility={layerVisibility}
+          toggleLayer={toggleLayer}
           sidebarCollapsed={sidebarCollapsed}
           interactionMode={interactionMode}
           onCoordinateClick={handleCoordinateClick}
@@ -1154,6 +1508,12 @@ export default function App() {
             rotationDeg: current.rotationDeg + degrees,
           }))}
           onTransformReset={() => setTransform(DEFAULT_TRANSFORM)}
+          onSaveAlignment={saveAlignment}
+          isAlignmentSaved={isAlignmentSaved}
+          alignmentSavedAt={alignmentSavedAt}
+          onMove={moveRobot}
+          activeKey={activeKey}
+          onResetPose={resetPose}
           interactionMode={interactionMode}
           setInteractionMode={setMode}
           draftZone={draftZone}
@@ -1164,9 +1524,6 @@ export default function App() {
           }}
           deleteZone={() => setForbiddenZones((zones) => zones.slice(0, -1))}
         />
-        {toolMode !== "align" && (
-            <ControlDock onMove={moveRobot} activeKey={activeKey} onReset={resetPose} />
-        )}
       </div>
 
       <div className="corner-brand">

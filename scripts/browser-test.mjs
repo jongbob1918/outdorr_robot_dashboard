@@ -65,15 +65,36 @@ async function clickText(text) {
   await new Promise((resolve) => setTimeout(resolve, 300));
 }
 
+async function clickSelector(selector) {
+  const clicked = await evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return false;
+    element.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error(`Element not found: ${selector}`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+
 async function mouseClick(x, y) {
   await command("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
   await command("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
   await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
+async function pressKey(key, { shift = false } = {}) {
+  const modifiers = shift ? 8 : 0;
+  await command("Input.dispatchKeyEvent", { type: "keyDown", key, modifiers });
+  await command("Input.dispatchKeyEvent", { type: "keyUp", key, modifiers });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+}
+
 await command("Runtime.enable");
 await command("Page.enable");
 await command("Page.navigate", { url: "http://localhost:4175" });
+await waitFor("document.readyState === 'complete'");
+await evaluate("localStorage.clear()");
+await command("Page.reload", { ignoreCache: true });
 await waitFor("document.readyState === 'complete'");
 await waitFor("!document.querySelector('.map-loading')");
 await waitFor("document.querySelector('.map-viewport')?.dataset.aerialMatrix === '15'");
@@ -84,23 +105,45 @@ const initial = await evaluate(`({
   topStages: document.querySelectorAll('.stage-navigation').length,
   matrix: document.querySelector('.map-viewport').dataset.aerialMatrix,
   resolution: document.querySelector('.map-viewport').dataset.aerialResolution,
+  posePublished: document.querySelector('.map-viewport').dataset.posePublished,
+  manualInsideSidebar: Boolean(document.querySelector('.simulator-panel .sidebar-control-dock')),
 })`);
-if (initial.topStages !== 0 || initial.tabs.length !== 3 || !initial.preview) {
+if (
+  initial.topStages !== 0 ||
+  initial.tabs.length !== 3 ||
+  !initial.preview ||
+  initial.posePublished !== "hidden" ||
+  !initial.manualInsideSidebar
+) {
   throw new Error(`Unified sidebar failed: ${JSON.stringify(initial)}`);
 }
 
 await clickText("좌표 정렬");
 await waitFor("document.querySelector('.map-viewport')?.dataset.toolMode === 'align'");
 const transformBefore = await evaluate("document.querySelector('.transform-readout').innerText");
-await clickText("동쪽으로 5미터");
+await pressKey("ArrowRight");
+await pressKey("ArrowUp", { shift: true });
 await clickText("+5°");
 const transformAfter = await evaluate("document.querySelector('.transform-readout').innerText");
 if (transformBefore === transformAfter || !transformAfter.includes("5.0°")) {
   throw new Error("Map transform controls did not update");
 }
+await clickText("정합 저장");
+await waitFor("document.querySelector('.alignment-save-status')?.classList.contains('saved')");
+const storedAlignment = await evaluate("localStorage.getItem('seooreung-map-alignment-v1')");
+if (!storedAlignment) throw new Error("Alignment was not persisted");
+await command("Page.reload", { ignoreCache: true });
+await waitFor("document.readyState === 'complete'");
+await waitFor("!document.querySelector('.map-loading')");
+await clickText("좌표 정렬");
+await waitFor("document.querySelector('.alignment-save-status')?.textContent.includes('자동 복원')");
+const transformRestored = await evaluate("document.querySelector('.transform-readout').innerText");
+if (transformRestored !== transformAfter) throw new Error("Alignment did not survive reload");
 
 await clickText("로봇 포즈");
+await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
 await clickText("포즈 발행");
+await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'visible'");
 const sequenceBefore = Number(
   (await evaluate("document.querySelector('.section-title small').textContent")).replace(/\D/g, ""),
 );
@@ -109,7 +152,36 @@ const sequenceAfter = Number(
   (await evaluate("document.querySelector('.section-title small').textContent")).replace(/\D/g, ""),
 );
 if (sequenceAfter - sequenceBefore < 3) throw new Error("10 Hz pose publisher did not advance");
+const poseScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+writeFileSync("/tmp/seooreung-pose-sidebar.png", Buffer.from(poseScreenshot.data, "base64"));
 await clickText("발행 중단");
+await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
+
+await clickText("레이어");
+await clickText("일반");
+await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'general'");
+await waitFor("Number(document.querySelector('.map-controls span')?.textContent) <= 15.1");
+await waitFor("Number(document.querySelector('.map-viewport')?.dataset.generalFeatures) > 0", 20_000);
+const generalMap = await evaluate(`({
+  baseMap: document.querySelector('.map-viewport').dataset.baseMap,
+  featureCount: Number(document.querySelector('.map-viewport').dataset.generalFeatures),
+  externalRequests: performance.getEntriesByType('resource')
+    .filter((entry) => entry.name.includes('tiles.openfreemap.org')).length,
+  checkedLayers: [...document.querySelectorAll('.layer-switches [role="switch"]')]
+    .filter((button) => button.getAttribute('aria-checked') === 'true').length,
+})`);
+if (generalMap.externalRequests < 1 || generalMap.featureCount < 1 || generalMap.checkedLayers !== 3) {
+  throw new Error(`General map or layer controls failed: ${JSON.stringify(generalMap)}`);
+}
+const generalScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+writeFileSync("/tmp/seooreung-general-map.png", Buffer.from(generalScreenshot.data, "base64"));
+await clickSelector(".layer-switches [role='switch']:nth-child(2)");
+await waitFor(
+  "[...document.querySelectorAll('.layer-switches [role=\"switch\"]')].find((button) => button.textContent.includes('로봇 포즈'))?.getAttribute('aria-checked') === 'false'",
+);
+await clickSelector(".base-map-options button:first-child");
+await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'satellite'");
+await clickSelector(".layer-control-trigger");
 
 await clickText("임무 편집");
 await clickText("목표 지정");
@@ -140,5 +212,12 @@ const screenshot = await command("Page.captureScreenshot", { format: "png", capt
 writeFileSync("/tmp/seooreung-dashboard.png", Buffer.from(screenshot.data, "base64"));
 
 if (runtimeErrors.length) throw new Error(`Runtime errors: ${runtimeErrors.join("; ")}`);
-console.log(JSON.stringify({ initial, transformAfter, sequenceDelta: sequenceAfter - sequenceBefore, highResolution }, null, 2));
+console.log(JSON.stringify({
+  initial,
+  transformAfter,
+  transformRestored,
+  sequenceDelta: sequenceAfter - sequenceBefore,
+  generalMap,
+  highResolution,
+}, null, 2));
 socket.close();
