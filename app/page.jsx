@@ -188,7 +188,7 @@ function MapCanvas({
   const refreshAerialTiles = useCallback(() => {
     const map = mapRef.current;
     const aerial = nationalDataRef.current?.aerial;
-    if (!map || !aerial || !map.isStyleLoaded()) return;
+    if (!map || !aerial || !map.getStyle()) return;
     const { level, tiles } = visibleAerialTiles(map, aerial);
     const nextIds = new Set();
     for (const { row, column } of tiles) {
