@@ -57,3 +57,5 @@ npm run preview
 이 저장소의 소스 코드는 [MIT License](./LICENSE)로 배포됩니다. 수정, 재배포 및 상업적
 이용이 가능합니다. 실제 운영에 추가하는 지도 데이터, 글꼴, 아이콘, API는 각각의
 별도 이용조건을 따릅니다.
+
+자세한 데이터·의존성 검토 결과는 [LICENSING.md](./LICENSING.md)를 참고하세요.

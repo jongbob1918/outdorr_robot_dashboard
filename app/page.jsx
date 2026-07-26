@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
+"use client";
+
+import { useMemo, useState } from "react";
 import {
   Activity,
   Bell,
@@ -32,7 +33,6 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import "./styles.css";
 
 const ROBOTS = [
   {
@@ -444,7 +444,7 @@ function SourceModal({ onClose }) {
   );
 }
 
-function App() {
+export default function App() {
   const [selected, setSelected] = useState("SR-01");
   const [running, setRunning] = useState(true);
   const [zoom, setZoom] = useState(16);
@@ -519,9 +519,3 @@ function App() {
     </div>
   );
 }
-
-createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);

@@ -4,17 +4,22 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "dev": "vinext dev --hostname 0.0.0.0",
+    "build": "vinext build",
+    "postbuild": "mkdir -p dist/.openai && cp .openai/hosting.json dist/.openai/hosting.json",
+    "preview": "vinext start --hostname 0.0.0.0"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-server-dom-webpack": "^19.2.8"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.5"
+    "@mdx-js/rollup": "^3.1.1",
+    "@vitejs/plugin-react": "^6.0.4",
+    "@vitejs/plugin-rsc": "^0.5.30",
+    "vinext": "^1.0.0-beta.4",
+    "vite": "^8.1.5"
   }
 }
