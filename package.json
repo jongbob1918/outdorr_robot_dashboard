@@ -7,19 +7,26 @@
     "dev": "vinext dev --hostname 0.0.0.0",
     "build": "vinext build",
     "postbuild": "mkdir -p dist/.openai && cp .openai/hosting.json dist/.openai/hosting.json",
-    "preview": "vinext start --hostname 0.0.0.0"
+    "preview": "vinext start --hostname 0.0.0.0",
+    "dev:vinext": "vinext dev --port 3001",
+    "build:vinext": "vinext build",
+    "start:vinext": "wrangler dev --config dist/server/wrangler.json",
+    "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },
   "dependencies": {
+    "@vinext/cloudflare": "^1.0.0-beta.4",
     "lucide-react": "^0.468.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-server-dom-webpack": "^19.2.8"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.47.0",
     "@mdx-js/rollup": "^3.1.1",
     "@vitejs/plugin-react": "^6.0.4",
     "@vitejs/plugin-rsc": "^0.5.30",
     "vinext": "^1.0.0-beta.4",
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "wrangler": "^4.114.0"
   }
 }

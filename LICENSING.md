@@ -18,6 +18,8 @@
 | Vite / vinext | MIT |
 | Vite React/RSC plugins | MIT |
 | MDX Rollup plugin | MIT |
+| vinext Cloudflare adapter / Cloudflare Vite plugin | MIT |
+| Wrangler | MIT 또는 Apache-2.0 |
 
 `package-lock.json`에 기록된 전체 전이 의존성의 라이선스 메타데이터도 확인했습니다.
 MIT, ISC, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD, MPL-2.0 및 CC-BY-4.0만
