@@ -105,6 +105,8 @@ const initial = await evaluate(`({
   topStages: document.querySelectorAll('.stage-navigation').length,
   matrix: document.querySelector('.map-viewport').dataset.aerialMatrix,
   resolution: document.querySelector('.map-viewport').dataset.aerialResolution,
+  visibleTileCount: Number(document.querySelector('.map-viewport').dataset.aerialTileCount),
+  contained: document.querySelector('.map-viewport').dataset.aerialContained,
   posePublished: document.querySelector('.map-viewport').dataset.posePublished,
   manualInsideSidebar: Boolean(document.querySelector('.simulator-panel .sidebar-control-dock')),
 })`);
@@ -182,6 +184,21 @@ await waitFor(
 await clickSelector(".base-map-options button:first-child");
 await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'satellite'");
 await clickSelector(".layer-control-trigger");
+for (let index = 0; index < 10; index += 1) await clickText("지도 축소");
+await waitFor("document.querySelector('.map-viewport')?.dataset.aerialContained === 'true'");
+const satelliteBoundary = await evaluate(`({
+  zoom: Number(document.querySelector('.map-controls span').textContent),
+  minimumZoom: Number(document.querySelector('.map-viewport').dataset.satelliteMinZoom),
+  contained: document.querySelector('.map-viewport').dataset.aerialContained,
+})`);
+if (
+  satelliteBoundary.contained !== "true" ||
+  satelliteBoundary.zoom + 0.1 < satelliteBoundary.minimumZoom
+) {
+  throw new Error(`Satellite boundary failed: ${JSON.stringify(satelliteBoundary)}`);
+}
+const boundaryScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+writeFileSync("/tmp/seooreung-satellite-boundary.png", Buffer.from(boundaryScreenshot.data, "base64"));
 
 await clickText("임무 편집");
 await clickText("목표 지정");
@@ -196,20 +213,23 @@ await mouseClick(712, 504);
 await clickText("완료");
 await waitFor("document.querySelector('[data-testid=\"zone-count\"]')?.textContent.trim() === '1'");
 
-for (let index = 0; index < 5; index += 1) await clickText("지도 확대");
+for (let index = 0; index < 10; index += 1) await clickText("지도 확대");
 await waitFor("document.querySelector('.map-viewport')?.dataset.aerialMatrix === '18'");
 const highResolution = await evaluate(`({
   matrix: document.querySelector('.map-viewport').dataset.aerialMatrix,
   resolution: document.querySelector('.map-viewport').dataset.aerialResolution,
+  visibleTileCount: Number(document.querySelector('.map-viewport').dataset.aerialTileCount),
+  contained: document.querySelector('.map-viewport').dataset.aerialContained,
   tileRequests: performance.getEntriesByType('resource')
     .filter((entry) => entry.name.includes('/ngii-air-2024/18/')).length,
   path: document.querySelector('[data-testid="path-status"]').textContent.trim(),
   zones: document.querySelector('[data-testid="zone-count"]').textContent.trim(),
 })`);
-if (highResolution.tileRequests < 1) throw new Error("High-resolution matrix 18 tiles were not requested");
-
 const screenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 writeFileSync("/tmp/seooreung-dashboard.png", Buffer.from(screenshot.data, "base64"));
+if (highResolution.visibleTileCount < 1 || highResolution.contained !== "true") {
+  throw new Error(`High-resolution matrix 18 tiles failed: ${JSON.stringify(highResolution)}`);
+}
 
 if (runtimeErrors.length) throw new Error(`Runtime errors: ${runtimeErrors.join("; ")}`);
 console.log(JSON.stringify({
@@ -218,6 +238,7 @@ console.log(JSON.stringify({
   transformRestored,
   sequenceDelta: sequenceAfter - sequenceBefore,
   generalMap,
+  satelliteBoundary,
   highResolution,
 }, null, 2));
 socket.close();

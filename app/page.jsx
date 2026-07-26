@@ -91,6 +91,29 @@ function projectedTileCoordinates(aerial, level, row, column) {
   ];
 }
 
+function aerialLevelBoundsWgs84(aerial, level) {
+  const span = aerial.tileSize * level.resolutionMetersPerPixel;
+  const { tileRange } = level;
+  const minX = aerial.origin[0] + tileRange.columnStart * span;
+  const maxX = aerial.origin[0] + (tileRange.columnEnd + 1) * span;
+  const maxY = aerial.origin[1] - tileRange.rowStart * span;
+  const minY = aerial.origin[1] - (tileRange.rowEnd + 1) * span;
+  return [
+    proj4(EPSG_5179, EPSG_4326, [minX, minY]),
+    proj4(EPSG_5179, EPSG_4326, [maxX, maxY]),
+  ];
+}
+
+function minimumZoomForBounds(map, bounds) {
+  const southWest = maplibregl.MercatorCoordinate.fromLngLat(bounds[0]);
+  const northEast = maplibregl.MercatorCoordinate.fromLngLat(bounds[1]);
+  const width = Math.max(1, map.getContainer().clientWidth);
+  const height = Math.max(1, map.getContainer().clientHeight);
+  const zoomX = Math.log2(width / (512 * Math.abs(northEast.x - southWest.x)));
+  const zoomY = Math.log2(height / (512 * Math.abs(southWest.y - northEast.y)));
+  return Math.min(20, Math.max(12, Math.max(zoomX, zoomY) + 0.04));
+}
+
 function visibleAerialTiles(map, aerial) {
   const level = aerialLevelForZoom(aerial.levels, map.getZoom());
   const span = aerial.tileSize * level.resolutionMetersPerPixel;
@@ -246,6 +269,8 @@ function MapCanvas({
   const mapRef = useRef(null);
   const nationalDataRef = useRef(null);
   const aerialTileIdsRef = useRef(new Set());
+  const aerialBoundaryMatrixRef = useRef(null);
+  const satelliteMinZoomRef = useRef(12);
   const satelliteCameraRef = useRef(null);
   const stateRef = useRef({
     interactionMode,
@@ -259,7 +284,9 @@ function MapCanvas({
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [zoom, setZoom] = useState(14.8);
   const [aerialLevel, setAerialLevel] = useState(null);
+  const [visibleAerialTileCount, setVisibleAerialTileCount] = useState(0);
   const [generalFeatureCount, setGeneralFeatureCount] = useState(0);
+  const [aerialViewportContained, setAerialViewportContained] = useState(true);
 
   stateRef.current = {
     interactionMode,
@@ -283,6 +310,21 @@ function MapCanvas({
     const aerial = nationalDataRef.current?.aerial;
     if (!map || !aerial || !map.getStyle()) return;
     const { level, tiles } = visibleAerialTiles(map, aerial);
+    setVisibleAerialTileCount(tiles.length);
+    const coverageBounds = aerialLevelBoundsWgs84(aerial, level);
+    if (stateRef.current.baseMap === "satellite") {
+      if (aerialBoundaryMatrixRef.current !== level.matrix) {
+        map.setMaxBounds(coverageBounds);
+        aerialBoundaryMatrixRef.current = level.matrix;
+      }
+      const viewport = map.getBounds();
+      setAerialViewportContained(
+        viewport.getWest() >= coverageBounds[0][0] - 1e-7 &&
+          viewport.getSouth() >= coverageBounds[0][1] - 1e-7 &&
+          viewport.getEast() <= coverageBounds[1][0] + 1e-7 &&
+          viewport.getNorth() <= coverageBounds[1][1] + 1e-7,
+      );
+    }
     const nextIds = new Set();
     for (const { row, column } of tiles) {
       const id = `ngii-${level.matrix}-${row}-${column}`;
@@ -360,6 +402,17 @@ function MapCanvas({
         mapRef.current = map;
 
         map.on("load", () => {
+          const widestAerialBounds = aerialLevelBoundsWgs84(
+            metadata.aerial,
+            metadata.aerial.levels[0],
+          );
+          satelliteMinZoomRef.current = minimumZoomForBounds(
+            map,
+            widestAerialBounds,
+          );
+          map.setMinZoom(satelliteMinZoomRef.current);
+          map.setMaxBounds(widestAerialBounds);
+
           map.addSource("heritage-boundary", { type: "geojson", data: heritage });
           map.addLayer({
             id: "heritage-boundary-fill",
@@ -612,6 +665,19 @@ function MapCanvas({
           refreshGrid();
           refreshAerialTiles();
         });
+        map.on("resize", () => {
+          if (stateRef.current.baseMap === "satellite") {
+            satelliteMinZoomRef.current = minimumZoomForBounds(
+              map,
+              aerialLevelBoundsWgs84(
+                metadata.aerial,
+                metadata.aerial.levels[0],
+              ),
+            );
+            map.setMinZoom(satelliteMinZoomRef.current);
+            refreshAerialTiles();
+          }
+        });
         map.on("idle", () => {
           setGeneralFeatureCount(
             stateRef.current.baseMap === "general" && map.getSource("openmaptiles")
@@ -642,6 +708,7 @@ function MapCanvas({
       mapRef.current?.remove();
       mapRef.current = null;
       nationalDataRef.current = null;
+      aerialBoundaryMatrixRef.current = null;
     };
   }, [refreshAerialTiles, refreshGrid]);
 
@@ -768,9 +835,20 @@ function MapCanvas({
         bearing: map.getBearing(),
         pitch: map.getPitch(),
       };
+      map.setMinZoom(12);
+      map.setMaxBounds(null);
+      aerialBoundaryMatrixRef.current = null;
       if (map.getZoom() > 15) map.easeTo({ zoom: 15, duration: 420 });
     } else if (satelliteCameraRef.current) {
-      map.easeTo({ ...satelliteCameraRef.current, duration: 420 });
+      map.setMinZoom(satelliteMinZoomRef.current);
+      map.easeTo({
+        ...satelliteCameraRef.current,
+        zoom: Math.max(
+          satelliteMinZoomRef.current,
+          satelliteCameraRef.current.zoom,
+        ),
+        duration: 420,
+      });
     }
     setBaseMap(nextBaseMap);
   };
@@ -799,10 +877,13 @@ function MapCanvas({
       aria-label="서오릉 지도"
       data-aerial-matrix={aerialLevel?.matrix ?? ""}
       data-aerial-resolution={aerialLevel?.resolutionMetersPerPixel ?? ""}
+      data-aerial-tile-count={visibleAerialTileCount}
       data-tool-mode={toolMode}
       data-base-map={baseMap}
       data-pose-published={publishing && layerVisibility.robotPose ? "visible" : "hidden"}
       data-general-features={generalFeatureCount}
+      data-aerial-contained={aerialViewportContained ? "true" : "false"}
+      data-satellite-min-zoom={satelliteMinZoomRef.current.toFixed(2)}
     >
       <div ref={containerRef} className="map-container" data-interaction-mode={interactionMode || "idle"} />
 
