@@ -113,7 +113,7 @@ await clickText("발행 중단");
 
 await clickText("임무 편집");
 await clickText("목표 지정");
-await mouseClick(720, 500);
+await mouseClick(520, 420);
 await waitFor("document.querySelector('[data-testid=\"path-status\"]')?.textContent.includes('WAYPOINTS')");
 
 await clickText("금지구역");

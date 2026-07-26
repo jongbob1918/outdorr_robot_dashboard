@@ -708,22 +708,43 @@ function RobotMapPreview({ pose, path, goal, forbiddenZones }) {
     pose.x + Math.sin(radians) * headingLength,
     pose.y + Math.cos(radians) * headingLength,
   ];
+  const visiblePoints = [
+    [pose.x, pose.y],
+    ...(goal ? [goal] : []),
+    ...path,
+    ...forbiddenZones.flat(),
+  ];
+  const xs = visiblePoints.map(([x]) => x);
+  const ys = visiblePoints.map(([, y]) => y);
+  const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+  let viewWidth = Math.max(210, Math.max(...xs) - Math.min(...xs) + 40);
+  let viewHeight = Math.max(152, Math.max(...ys) - Math.min(...ys) + 40);
+  const previewAspect = 210 / 152;
+  if (viewWidth / viewHeight > previewAspect) viewHeight = viewWidth / previewAspect;
+  else viewWidth = viewHeight * previewAspect;
+  const viewX = centerX - viewWidth / 2;
+  const viewY = centerY - viewHeight / 2;
   return (
     <section className="robot-map-preview" data-testid="sidebar-robot-map">
       <div className="preview-title">
         <span><Layers3 size={14} />ROBOT MAP / LOCAL FRAME</span>
-        <small>GRID 10 m</small>
+        <small>INFINITE · AUTO FIT</small>
       </div>
-      <svg viewBox="-105 -76 210 152" role="img" aria-label="사이드바 로봇 좌표 지도">
+      <svg
+        viewBox={`${viewX} ${-(centerY + viewHeight / 2)} ${viewWidth} ${viewHeight}`}
+        role="img"
+        aria-label="사이드바 무한 로봇 좌표 지도"
+      >
         <defs>
           <pattern id="local-grid" width="10" height="10" patternUnits="userSpaceOnUse">
             <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#92aca8" strokeWidth=".35" opacity=".3" />
           </pattern>
         </defs>
         <g transform="scale(1,-1)">
-          <rect x="-105" y="-76" width="210" height="152" fill="url(#local-grid)" />
-          <line x1="-105" y1="0" x2="105" y2="0" stroke="#ff6b70" strokeWidth=".8" opacity=".72" />
-          <line x1="0" y1="-76" x2="0" y2="76" stroke="#50a9ff" strokeWidth=".8" opacity=".72" />
+          <rect x={viewX} y={viewY} width={viewWidth} height={viewHeight} fill="url(#local-grid)" />
+          <line x1={viewX} y1="0" x2={viewX + viewWidth} y2="0" stroke="#ff6b70" strokeWidth=".8" opacity=".72" />
+          <line x1="0" y1={viewY} x2="0" y2={viewY + viewHeight} stroke="#50a9ff" strokeWidth=".8" opacity=".72" />
           {ROBOT_OBSTACLES.map((item) => (
             <rect
               key={item.id}
@@ -999,8 +1020,6 @@ export default function App() {
       }
       if (action === "turn-left") next.yaw -= 5;
       if (action === "turn-right") next.yaw += 5;
-      next.x = Math.max(ROBOT_EXTENT.minX + 3, Math.min(ROBOT_EXTENT.maxX - 3, next.x));
-      next.y = Math.max(ROBOT_EXTENT.minY + 3, Math.min(ROBOT_EXTENT.maxY - 3, next.y));
       next.yaw = ((next.yaw + 180) % 360 + 360) % 360 - 180;
       return next;
     });

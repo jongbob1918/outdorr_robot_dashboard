@@ -251,10 +251,6 @@ function pointInObstacle([x, y], padding = 1.3) {
 
 export function isBlocked(point, forbiddenZones = []) {
   return (
-    point[0] < ROBOT_EXTENT.minX ||
-    point[0] > ROBOT_EXTENT.maxX ||
-    point[1] < ROBOT_EXTENT.minY ||
-    point[1] > ROBOT_EXTENT.maxY ||
     pointInObstacle(point) ||
     forbiddenZones.some((zone) => pointInPolygon(point, zone))
   );
@@ -280,6 +276,49 @@ function simplifyPath(path) {
   return result;
 }
 
+class MinPriorityQueue {
+  constructor() {
+    this.items = [];
+  }
+
+  get size() {
+    return this.items.length;
+  }
+
+  push(value) {
+    this.items.push(value);
+    let index = this.items.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (this.items[parent].f <= value.f) break;
+      this.items[index] = this.items[parent];
+      index = parent;
+    }
+    this.items[index] = value;
+  }
+
+  pop() {
+    if (this.items.length === 1) return this.items.pop();
+    const first = this.items[0];
+    const last = this.items.pop();
+    let index = 0;
+    while (true) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      if (left >= this.items.length) break;
+      const smaller =
+        right < this.items.length && this.items[right].f < this.items[left].f
+          ? right
+          : left;
+      if (this.items[smaller].f >= last.f) break;
+      this.items[index] = this.items[smaller];
+      index = smaller;
+    }
+    this.items[index] = last;
+    return first;
+  }
+}
+
 export function planAStar(start, goal, forbiddenZones = [], resolution = 2) {
   if (!start || !goal || isBlocked(start, forbiddenZones) || isBlocked(goal, forbiddenZones)) {
     return [];
@@ -290,7 +329,30 @@ export function planAStar(start, goal, forbiddenZones = [], resolution = 2) {
   ];
   const from = snap(start);
   const to = snap(goal);
-  const frontier = [{ x: from[0], y: from[1], f: 0 }];
+  const blockerCells = [
+    ...ROBOT_OBSTACLES.flatMap((obstacle) => [
+      [obstacle.minX / resolution, obstacle.minY / resolution],
+      [obstacle.maxX / resolution, obstacle.maxY / resolution],
+    ]),
+    ...forbiddenZones.flatMap((zone) =>
+      zone.map(([x, y]) => [x / resolution, y / resolution]),
+    ),
+  ];
+  const envelopePoints = [from, to, ...blockerCells];
+  const directDistance = Math.hypot(to[0] - from[0], to[1] - from[1]);
+  const margin = Math.max(20, Math.ceil(directDistance * 0.25));
+  const searchBounds = {
+    minX: Math.floor(Math.min(...envelopePoints.map(([x]) => x)) - margin),
+    maxX: Math.ceil(Math.max(...envelopePoints.map(([x]) => x)) + margin),
+    minY: Math.floor(Math.min(...envelopePoints.map(([, y]) => y)) - margin),
+    maxY: Math.ceil(Math.max(...envelopePoints.map(([, y]) => y)) + margin),
+  };
+  const maxVisited = Math.min(
+    250_000,
+    Math.max(30_000, Math.ceil(directDistance * 250)),
+  );
+  const frontier = new MinPriorityQueue();
+  frontier.push({ x: from[0], y: from[1], f: 0 });
   const cameFrom = new Map();
   const gScore = new Map([[keyOf(from[0], from[1]), 0]]);
   const closed = new Set();
@@ -306,9 +368,8 @@ export function planAStar(start, goal, forbiddenZones = [], resolution = 2) {
   ];
   const heuristic = (x, y) => Math.hypot(to[0] - x, to[1] - y);
 
-  while (frontier.length && closed.size < 30_000) {
-    frontier.sort((a, b) => a.f - b.f);
-    const current = frontier.shift();
+  while (frontier.size && closed.size < maxVisited) {
+    const current = frontier.pop();
     const currentKey = keyOf(current.x, current.y);
     if (closed.has(currentKey)) continue;
     if (current.x === to[0] && current.y === to[1]) {
@@ -330,6 +391,14 @@ export function planAStar(start, goal, forbiddenZones = [], resolution = 2) {
     for (const [dx, dy, cost] of directions) {
       const nx = current.x + dx;
       const ny = current.y + dy;
+      if (
+        nx < searchBounds.minX ||
+        nx > searchBounds.maxX ||
+        ny < searchBounds.minY ||
+        ny > searchBounds.maxY
+      ) {
+        continue;
+      }
       const point = [nx * resolution, ny * resolution];
       const nextKey = keyOf(nx, ny);
       if (closed.has(nextKey) || isBlocked(point, forbiddenZones)) continue;
