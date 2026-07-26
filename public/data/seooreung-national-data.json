@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-26T16:57:09.175Z",
+  "generatedAt": "2026-07-26T17:25:11.535Z",
   "location": "고양 서오릉",
   "sources": [
     {
@@ -9,15 +9,12 @@
       "url": "https://map.ngii.go.kr/airmapprime/map/wmts",
       "layer": "mapprime:air_2024",
       "matrixSet": "NGIS_AIR",
-      "matrix": 16,
-      "resolutionMetersPerPixel": 1.02,
-      "tileRange": {
-        "rowStart": 7811,
-        "rowEnd": 7819,
-        "columnStart": 4388,
-        "columnEnd": 4396,
-        "count": 81
-      }
+      "matrices": [
+        15,
+        16,
+        17,
+        18
+      ]
     },
     {
       "organization": "국가유산청",
@@ -28,29 +25,63 @@
       "featureCount": 1
     }
   ],
-  "image": {
-    "path": "/data/seooreung-ngii-air-2024.jpg",
-    "width": 2304,
-    "height": 2304,
-    "coordinates": [
-      [
-        126.88558995990434,
-        37.64140342756279
-      ],
-      [
-        126.91222642831674,
-        37.64153914168559
-      ],
-      [
-        126.91239322800213,
-        37.62035789204767
-      ],
-      [
-        126.88576431741232,
-        37.620222280990255
-      ]
+  "aerial": {
+    "type": "local-multi-resolution-tile-pyramid",
+    "pathTemplate": "/data/ngii-air-2024/{matrix}/{row}/{column}.jpg",
+    "projection": "EPSG:5179",
+    "tileSize": 256,
+    "origin": [
+      -200000,
+      4000000
     ],
-    "sha256": "24f75b7edf3f584734d0d8fe528a638e195934262d03e43d83a88e6b4b12baf3"
+    "levels": [
+      {
+        "matrix": 15,
+        "resolutionMetersPerPixel": 2.04,
+        "tileRange": {
+          "rowStart": 3905,
+          "rowEnd": 3909,
+          "columnStart": 2194,
+          "columnEnd": 2198,
+          "count": 25
+        }
+      },
+      {
+        "matrix": 16,
+        "resolutionMetersPerPixel": 1.02,
+        "tileRange": {
+          "rowStart": 7811,
+          "rowEnd": 7819,
+          "columnStart": 4388,
+          "columnEnd": 4396,
+          "count": 81
+        }
+      },
+      {
+        "matrix": 17,
+        "resolutionMetersPerPixel": 0.51,
+        "tileRange": {
+          "rowStart": 15622,
+          "rowEnd": 15639,
+          "columnStart": 8777,
+          "columnEnd": 8792,
+          "count": 288
+        }
+      },
+      {
+        "matrix": 18,
+        "resolutionMetersPerPixel": 0.255,
+        "tileRange": {
+          "rowStart": 31244,
+          "rowEnd": 31278,
+          "columnStart": 17555,
+          "columnEnd": 17584,
+          "count": 1050
+        }
+      }
+    ],
+    "totalTileCount": 1444,
+    "sha256": "f9bdfe92d46ac604d2f3cf28b45d3ea6f9572f019eb49454cbde2a7c3fb90ff5"
   },
   "heritage": {
     "path": "/data/seooreung-national-heritage.geojson",
