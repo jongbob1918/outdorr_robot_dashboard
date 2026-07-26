@@ -1,0 +1,75 @@
+{
+  "generatedAt": "2026-07-26T16:57:09.175Z",
+  "location": "고양 서오릉",
+  "sources": [
+    {
+      "organization": "국토교통부 국토지리정보원",
+      "dataset": "항공사진 영상지도",
+      "year": 2024,
+      "url": "https://map.ngii.go.kr/airmapprime/map/wmts",
+      "layer": "mapprime:air_2024",
+      "matrixSet": "NGIS_AIR",
+      "matrix": 16,
+      "resolutionMetersPerPixel": 1.02,
+      "tileRange": {
+        "rowStart": 7811,
+        "rowEnd": 7819,
+        "columnStart": 4388,
+        "columnEnd": 4396,
+        "count": 81
+      }
+    },
+    {
+      "organization": "국가유산청",
+      "dataset": "지정유산 공간정보",
+      "url": "https://gis-heritage.go.kr/newMain/heritageDownload.do",
+      "originalFile": "seooreung-designated-heritage.zip",
+      "originalCrs": "EPSG:5179",
+      "featureCount": 1
+    }
+  ],
+  "image": {
+    "path": "/data/seooreung-ngii-air-2024.jpg",
+    "width": 2304,
+    "height": 2304,
+    "coordinates": [
+      [
+        126.88558995990434,
+        37.64140342756279
+      ],
+      [
+        126.91222642831674,
+        37.64153914168559
+      ],
+      [
+        126.91239322800213,
+        37.62035789204767
+      ],
+      [
+        126.88576431741232,
+        37.620222280990255
+      ]
+    ],
+    "sha256": "24f75b7edf3f584734d0d8fe528a638e195934262d03e43d83a88e6b4b12baf3"
+  },
+  "heritage": {
+    "path": "/data/seooreung-national-heritage.geojson",
+    "boundsEpsg5179": {
+      "minX": 946123.201618283,
+      "minY": 1958264.89753954,
+      "maxX": 947841.868700647,
+      "maxY": 1960286.42190327
+    },
+    "boundsWgs84": {
+      "minX": 126.88939938306383,
+      "minY": 37.6223154652642,
+      "maxX": 126.90890606366145,
+      "maxY": 37.64050648471395
+    },
+    "center": [
+      126.89915272336265,
+      37.63141097498908
+    ],
+    "sha256": "1a3056c6c59c3005286dbb44f6643b33eda7a2ca03ec92f6faed6040cad020ac"
+  }
+}
