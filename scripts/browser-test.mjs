@@ -109,16 +109,50 @@ const initial = await evaluate(`({
   contained: document.querySelector('.map-viewport').dataset.aerialContained,
   posePublished: document.querySelector('.map-viewport').dataset.posePublished,
   manualInsideSidebar: Boolean(document.querySelector('.simulator-panel .sidebar-control-dock')),
+  previewObstacles: document.querySelectorAll('.preview-obstacle').length,
+  generalMapOpacity: document.querySelector('.map-viewport').dataset.generalMapOpacity,
 })`);
 if (
   initial.topStages !== 0 ||
   initial.tabs.length !== 3 ||
   !initial.preview ||
   initial.posePublished !== "hidden" ||
-  !initial.manualInsideSidebar
+  !initial.manualInsideSidebar ||
+  initial.previewObstacles !== 0 ||
+  initial.generalMapOpacity !== "0"
 ) {
   throw new Error(`Unified sidebar failed: ${JSON.stringify(initial)}`);
 }
+
+await clickText("지도 화면 설정");
+await waitFor("Boolean(document.querySelector('.map-view-settings'))");
+const mapViewBefore = await evaluate("document.querySelector('.map-camera-readout').innerText");
+await clickText("+5°");
+await waitFor(
+  "!document.querySelector('.map-view-save-state')?.classList.contains('saved')",
+);
+await waitFor(
+  "Number(document.querySelector('.map-camera-readout span:nth-child(2) b')?.textContent) >= 17",
+);
+await clickText("현재 화면 저장");
+await waitFor("document.querySelector('.map-view-save-state')?.classList.contains('saved')");
+const storedMapView = await evaluate("localStorage.getItem('seooreung-map-view-v1')");
+if (!storedMapView) throw new Error("Map view was not persisted");
+const savedMapViewReadout = await evaluate("document.querySelector('.map-camera-readout').innerText");
+if (savedMapViewReadout === mapViewBefore) throw new Error("Map view rotation did not update");
+await new Promise((resolve) => setTimeout(resolve, 1_500));
+const settingsScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+writeFileSync("/tmp/seooreung-map-settings.png", Buffer.from(settingsScreenshot.data, "base64"));
+await command("Page.reload", { ignoreCache: true });
+await waitFor("document.readyState === 'complete'");
+await waitFor("!document.querySelector('.map-loading')");
+await clickText("지도 화면 설정");
+await waitFor("document.querySelector('.map-view-save-state')?.classList.contains('saved')");
+const restoredMapViewReadout = await evaluate("document.querySelector('.map-camera-readout').innerText");
+if (restoredMapViewReadout !== savedMapViewReadout) {
+  throw new Error("Saved map view did not survive reload");
+}
+await clickSelector(".map-view-settings-heading > button");
 
 await clickText("좌표 정렬");
 await waitFor("document.querySelector('.map-viewport')?.dataset.toolMode === 'align'");
@@ -171,8 +205,14 @@ const generalMap = await evaluate(`({
     .filter((entry) => entry.name.includes('tiles.openfreemap.org')).length,
   checkedLayers: [...document.querySelectorAll('.layer-switches [role="switch"]')]
     .filter((button) => button.getAttribute('aria-checked') === 'true').length,
+  generalMapOpacity: document.querySelector('.map-viewport').dataset.generalMapOpacity,
 })`);
-if (generalMap.externalRequests < 1 || generalMap.featureCount < 1 || generalMap.checkedLayers !== 3) {
+if (
+  generalMap.externalRequests < 1 ||
+  generalMap.featureCount < 1 ||
+  generalMap.checkedLayers !== 3 ||
+  generalMap.generalMapOpacity !== "1"
+) {
   throw new Error(`General map or layer controls failed: ${JSON.stringify(generalMap)}`);
 }
 const generalScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
@@ -190,10 +230,12 @@ const satelliteBoundary = await evaluate(`({
   zoom: Number(document.querySelector('.map-controls span').textContent),
   minimumZoom: Number(document.querySelector('.map-viewport').dataset.satelliteMinZoom),
   contained: document.querySelector('.map-viewport').dataset.aerialContained,
+  generalMapOpacity: document.querySelector('.map-viewport').dataset.generalMapOpacity,
 })`);
 if (
   satelliteBoundary.contained !== "true" ||
-  satelliteBoundary.zoom + 0.1 < satelliteBoundary.minimumZoom
+  satelliteBoundary.zoom + 0.1 < satelliteBoundary.minimumZoom ||
+  satelliteBoundary.generalMapOpacity !== "0"
 ) {
   throw new Error(`Satellite boundary failed: ${JSON.stringify(satelliteBoundary)}`);
 }
@@ -212,6 +254,17 @@ await mouseClick(728, 504);
 await mouseClick(712, 504);
 await clickText("완료");
 await waitFor("document.querySelector('[data-testid=\"zone-count\"]')?.textContent.trim() === '1'");
+await clickText("임무 종료");
+await waitFor("document.querySelector('[data-testid=\"path-status\"]')?.textContent.trim() === 'READY'");
+const missionEnded = await evaluate(`({
+  path: document.querySelector('[data-testid="path-status"]').textContent.trim(),
+  previewRoute: Boolean(document.querySelector('.preview-route')),
+  previewGoal: Boolean(document.querySelector('.preview-goal')),
+  endButton: [...document.querySelectorAll('button')].some((button) => button.textContent.includes('임무 종료')),
+})`);
+if (missionEnded.previewRoute || missionEnded.previewGoal || missionEnded.endButton) {
+  throw new Error(`Mission did not clear: ${JSON.stringify(missionEnded)}`);
+}
 
 for (let index = 0; index < 10; index += 1) await clickText("지도 확대");
 await waitFor("document.querySelector('.map-viewport')?.dataset.aerialMatrix === '18'");
@@ -236,9 +289,12 @@ console.log(JSON.stringify({
   initial,
   transformAfter,
   transformRestored,
+  savedMapViewReadout,
+  restoredMapViewReadout,
   sequenceDelta: sequenceAfter - sequenceBefore,
   generalMap,
   satelliteBoundary,
+  missionEnded,
   highResolution,
 }, null, 2));
 socket.close();

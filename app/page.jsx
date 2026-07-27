@@ -33,6 +33,7 @@ import {
   Satellite,
   Save,
   Send,
+  Settings2,
   SquareTerminal,
   Trash2,
   X,
@@ -43,14 +44,12 @@ import proj4 from "proj4";
 import {
   DEFAULT_TRANSFORM,
   ROBOT_EXTENT,
-  ROBOT_OBSTACLES,
   axisGeoJSON,
   buildInfiniteGridGeoJSON,
   forbiddenGeoJSON,
   headingGeoJSON,
   lngLatToLocal,
   localToLngLat,
-  obstacleGeoJSON,
   planAStar,
   pointGeoJSON,
   poseGeoJSON,
@@ -61,6 +60,7 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 const INITIAL_POSE = { x: -22.4, y: -8.8, yaw: 32 };
 const ALIGNMENT_STORAGE_KEY = "seooreung-map-alignment-v1";
+const MAP_VIEW_STORAGE_KEY = "seooreung-map-view-v1";
 const GENERAL_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 const ROBOT_EVENTS = [
   { id: "battery-check", point: [-68, 24], severity: "info" },
@@ -112,6 +112,47 @@ function minimumZoomForBounds(map, bounds) {
   const zoomX = Math.log2(width / (512 * Math.abs(northEast.x - southWest.x)));
   const zoomY = Math.log2(height / (512 * Math.abs(southWest.y - northEast.y)));
   return Math.min(20, Math.max(12, Math.max(zoomX, zoomY) + 0.04));
+}
+
+function mapCameraSnapshot(map) {
+  const center = map.getCenter();
+  return {
+    center: [center.lng, center.lat],
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+  };
+}
+
+function isValidMapView(candidate) {
+  return (
+    candidate &&
+    Array.isArray(candidate.center) &&
+    candidate.center.length === 2 &&
+    candidate.center.every(Number.isFinite) &&
+    ["zoom", "bearing"].every((key) => Number.isFinite(candidate[key])) &&
+    (candidate.baseMap === "satellite" || candidate.baseMap === "general")
+  );
+}
+
+const GENERAL_OPACITY_PROPERTIES = {
+  background: ["background-opacity"],
+  fill: ["fill-opacity"],
+  line: ["line-opacity"],
+  symbol: ["icon-opacity", "text-opacity"],
+  circle: ["circle-opacity", "circle-stroke-opacity"],
+  heatmap: ["heatmap-opacity"],
+  "fill-extrusion": ["fill-extrusion-opacity"],
+  raster: ["raster-opacity"],
+};
+
+function setGeneralLayersVisible(map, layers, visible) {
+  for (const { id, properties } of layers) {
+    if (!map.getLayer(id)) continue;
+    for (const { name, value } of properties) {
+      map.setPaintProperty(id, name, visible ? value : 0);
+    }
+  }
 }
 
 function visibleAerialTiles(map, aerial) {
@@ -248,6 +289,59 @@ function LayerControl({
   );
 }
 
+function MapViewSettings({
+  open,
+  onClose,
+  camera,
+  baseMap,
+  onCommand,
+  onSave,
+  isSaved,
+  savedAt,
+}) {
+  if (!open) return null;
+  return (
+    <section className="map-view-settings" aria-label="지도 화면 설정">
+      <div className="map-view-settings-heading">
+        <span><Settings2 size={16} /></span>
+        <div><small>MAP VIEW SETTINGS</small><strong>지도 화면 편집</strong></div>
+        <button onClick={onClose} aria-label="지도 화면 설정 닫기"><X size={16} /></button>
+      </div>
+      <p>중앙 원점을 고정한 채 지도를 이동·회전하고 현재 화면을 저장합니다. 위성 회전 시 영상 유지를 위해 안전 배율로 자동 확대됩니다.</p>
+      <div className="map-camera-readout">
+        <span><small>CENTER</small><b>{camera ? `${camera.center[0].toFixed(5)}, ${camera.center[1].toFixed(5)}` : "—"}</b></span>
+        <span><small>ZOOM</small><b>{camera?.zoom.toFixed(2) ?? "—"}</b></span>
+        <span><small>BEARING</small><b>{camera ? `${camera.bearing.toFixed(1)}°` : "—"}</b></span>
+      </div>
+      <div className="map-view-nudge" aria-label="지도 화면 이동">
+        <button onClick={() => onCommand("pan-up")} aria-label="지도 위로 이동"><ArrowUp size={17} /></button>
+        <button onClick={() => onCommand("pan-left")} aria-label="지도 왼쪽 이동"><ArrowLeft size={17} /></button>
+        <span><Crosshair size={16} /></span>
+        <button onClick={() => onCommand("pan-right")} aria-label="지도 오른쪽 이동"><ArrowRight size={17} /></button>
+        <button onClick={() => onCommand("pan-down")} aria-label="지도 아래로 이동"><ArrowDown size={17} /></button>
+      </div>
+      <div className="map-view-actions">
+        <button onClick={() => onCommand("rotate-left")}><RotateCcw size={15} />-5°</button>
+        <button onClick={() => onCommand("rotate-right")}><RotateCw size={15} />+5°</button>
+        <button onClick={() => onCommand("zoom-out")}><Minus size={15} />축소</button>
+        <button onClick={() => onCommand("zoom-in")}><Plus size={15} />확대</button>
+        <button onClick={() => onCommand("center-origin")}><Crosshair size={15} />로봇 원점</button>
+        <button className="map-view-save" onClick={onSave} disabled={!camera}>
+          <Save size={15} />{isSaved ? "저장됨" : "현재 화면 저장"}
+        </button>
+      </div>
+      <div className={`map-view-save-state ${isSaved ? "saved" : "dirty"}`}>
+        <i />
+        <span>
+          {isSaved
+            ? `${savedAt || "저장된 화면"} · ${baseMap === "satellite" ? "위성" : "일반"}`
+            : "화면 위치가 저장되지 않았습니다"}
+        </span>
+      </div>
+    </section>
+  );
+}
+
 function MapCanvas({
   toolMode,
   pose,
@@ -264,19 +358,28 @@ function MapCanvas({
   goal,
   forbiddenZones,
   draftZone,
+  savedMapView,
+  mapViewCommand,
+  onMapViewChange,
+  showViewOrigin,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const nationalDataRef = useRef(null);
   const aerialTileIdsRef = useRef(new Set());
+  const generalLayerPaintRef = useRef([]);
   const aerialBoundaryMatrixRef = useRef(null);
   const satelliteMinZoomRef = useRef(12);
   const satelliteCameraRef = useRef(null);
+  const appliedSavedViewRef = useRef("");
+  const handledMapCommandRef = useRef(0);
   const stateRef = useRef({
     interactionMode,
     onCoordinateClick,
     transform,
     baseMap,
+    savedMapView,
+    onMapViewChange,
   });
   const [mapReady, setMapReady] = useState(false);
   const [dataError, setDataError] = useState("");
@@ -293,6 +396,8 @@ function MapCanvas({
     onCoordinateClick,
     transform,
     baseMap,
+    savedMapView,
+    onMapViewChange,
   };
 
   const refreshGrid = useCallback(() => {
@@ -344,10 +449,7 @@ function MapCanvas({
           id,
           type: "raster",
           source: id,
-          layout: {
-            visibility:
-              stateRef.current.baseMap === "satellite" ? "visible" : "none",
-          },
+          layout: { visibility: "none" },
           paint: {
             "raster-opacity": 1,
             "raster-brightness-min": 0.04,
@@ -367,7 +469,17 @@ function MapCanvas({
       if (map.getSource(id)) map.removeSource(id);
     }
     aerialTileIdsRef.current = nextIds;
+    for (const id of nextIds) {
+      if (map.getLayer(id)) {
+        map.setLayoutProperty(
+          id,
+          "visibility",
+          stateRef.current.baseMap === "satellite" ? "visible" : "none",
+        );
+      }
+    }
     setAerialLevel(level);
+    map.triggerRepaint();
   }, []);
 
   useEffect(() => {
@@ -412,6 +524,17 @@ function MapCanvas({
           );
           map.setMinZoom(satelliteMinZoomRef.current);
           map.setMaxBounds(widestAerialBounds);
+
+          generalLayerPaintRef.current = map.getStyle().layers.map((layer) => ({
+            id: layer.id,
+            properties: (GENERAL_OPACITY_PROPERTIES[layer.type] ?? []).map(
+              (name) => ({
+                name,
+                value: map.getPaintProperty(layer.id, name) ?? 1,
+              }),
+            ),
+          }));
+          setGeneralLayersVisible(map, generalLayerPaintRef.current, false);
 
           map.addSource("heritage-boundary", { type: "geojson", data: heritage });
           map.addLayer({
@@ -494,29 +617,6 @@ function MapCanvas({
               ],
               "line-width": ["case", ["get", "axis"], 1.8, ["get", "major"], 1.1, 0.65],
               "line-opacity": ["case", ["get", "axis"], 0.92, ["get", "major"], 0.52, 0.24],
-            },
-          });
-
-          addGeoJSONSource(map, "robot-obstacles");
-          map.addLayer({
-            id: "robot-obstacles-fill",
-            type: "fill",
-            source: "robot-obstacles",
-            layout: { visibility: "none" },
-            paint: {
-              "fill-color": "#91aeb8",
-              "fill-opacity": 0.18,
-            },
-          });
-          map.addLayer({
-            id: "robot-obstacles-line",
-            type: "line",
-            source: "robot-obstacles",
-            layout: { visibility: "none" },
-            paint: {
-              "line-color": "#e2eef1",
-              "line-width": 2,
-              "line-opacity": 0.88,
             },
           });
 
@@ -641,16 +741,24 @@ function MapCanvas({
             },
           });
 
-          map.fitBounds(
-            [
-              [metadata.heritage.boundsWgs84.minX, metadata.heritage.boundsWgs84.minY],
-              [metadata.heritage.boundsWgs84.maxX, metadata.heritage.boundsWgs84.maxY],
-            ],
-            { padding: 34, duration: 0 },
-          );
+          if (stateRef.current.savedMapView) {
+            map.jumpTo(stateRef.current.savedMapView);
+            appliedSavedViewRef.current = JSON.stringify(
+              stateRef.current.savedMapView,
+            );
+          } else {
+            map.fitBounds(
+              [
+                [metadata.heritage.boundsWgs84.minX, metadata.heritage.boundsWgs84.minY],
+                [metadata.heritage.boundsWgs84.maxX, metadata.heritage.boundsWgs84.maxY],
+              ],
+              { padding: 34, duration: 0 },
+            );
+          }
           refreshAerialTiles();
           refreshGrid();
           setZoom(map.getZoom());
+          stateRef.current.onMapViewChange?.(mapCameraSnapshot(map));
           map.once("idle", () => {
             if (!cancelled) setMapReady(true);
           });
@@ -660,6 +768,7 @@ function MapCanvas({
         map.on("moveend", () => {
           refreshGrid();
           refreshAerialTiles();
+          stateRef.current.onMapViewChange?.(mapCameraSnapshot(map));
         });
         map.on("zoomend", () => {
           refreshGrid();
@@ -709,12 +818,89 @@ function MapCanvas({
       mapRef.current = null;
       nationalDataRef.current = null;
       aerialBoundaryMatrixRef.current = null;
+      generalLayerPaintRef.current = [];
     };
   }, [refreshAerialTiles, refreshGrid]);
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!mapReady || !map || !savedMapView) return;
+    const savedKey = JSON.stringify(savedMapView);
+    if (appliedSavedViewRef.current === savedKey) return;
+    const current = mapCameraSnapshot(map);
+    const alreadyAtSavedView =
+      Math.abs(current.center[0] - savedMapView.center[0]) < 1e-8 &&
+      Math.abs(current.center[1] - savedMapView.center[1]) < 1e-8 &&
+      Math.abs(current.zoom - savedMapView.zoom) < 0.005 &&
+      Math.abs(current.bearing - savedMapView.bearing) < 0.05;
+    if (alreadyAtSavedView) {
+      appliedSavedViewRef.current = savedKey;
+      return;
+    }
+    map.jumpTo({
+      center: savedMapView.center,
+      zoom: savedMapView.zoom,
+      bearing: savedMapView.bearing,
+      pitch: savedMapView.pitch ?? 0,
+    });
+    appliedSavedViewRef.current = savedKey;
+    refreshAerialTiles();
+  }, [mapReady, refreshAerialTiles, savedMapView]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (
+      !mapReady ||
+      !map ||
+      !mapViewCommand ||
+      handledMapCommandRef.current === mapViewCommand.id
+    ) {
+      return;
+    }
+    handledMapCommandRef.current = mapViewCommand.id;
+    const duration = 180;
+    const commands = {
+      "pan-up": () => map.panBy([0, -52], { duration }),
+      "pan-down": () => map.panBy([0, 52], { duration }),
+      "pan-left": () => map.panBy([-52, 0], { duration }),
+      "pan-right": () => map.panBy([52, 0], { duration }),
+      "rotate-left": () =>
+        map.easeTo({
+          bearing: map.getBearing() - 5,
+          zoom: baseMap === "satellite" ? Math.max(17, map.getZoom()) : map.getZoom(),
+          duration: 320,
+        }),
+      "rotate-right": () =>
+        map.easeTo({
+          bearing: map.getBearing() + 5,
+          zoom: baseMap === "satellite" ? Math.max(17, map.getZoom()) : map.getZoom(),
+          duration: 320,
+        }),
+      "zoom-in": () =>
+        map.zoomTo(
+          Math.min(baseMap === "general" ? 16 : 20, map.getZoom() + 0.5),
+          { duration },
+        ),
+      "zoom-out": () => map.zoomTo(Math.max(map.getMinZoom(), map.getZoom() - 0.5), { duration }),
+      "center-origin": () =>
+        map.easeTo({
+          center: [transform.originLng, transform.originLat],
+          duration: 320,
+        }),
+    };
+    commands[mapViewCommand.action]?.();
+  }, [baseMap, mapReady, mapViewCommand, transform.originLat, transform.originLng]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!mapReady || !map) return;
+    if (baseMap === "general") {
+      map.setMinZoom(12);
+      map.setMaxBounds(null);
+      aerialBoundaryMatrixRef.current = null;
+    } else {
+      map.setMinZoom(satelliteMinZoomRef.current);
+    }
     refreshAerialTiles();
     const align = toolMode === "align" && overlayVisible ? "visible" : "none";
     const poseVisible =
@@ -722,8 +908,13 @@ function MapCanvas({
     const forbiddenVisible = layerVisibility.forbidden ? "visible" : "none";
     const eventsVisible = layerVisibility.events ? "visible" : "none";
     const mission = toolMode === "mission" ? "visible" : "none";
-    ["robot-grid-line", "robot-obstacles-fill", "robot-obstacles-line", "robot-axes-line"].forEach(
+    ["robot-grid-line", "robot-axes-line"].forEach(
       (id) => map.setLayoutProperty(id, "visibility", align),
+    );
+    setGeneralLayersVisible(
+      map,
+      generalLayerPaintRef.current,
+      baseMap === "general",
     );
     [
       "robot-heading-line",
@@ -775,7 +966,6 @@ function MapCanvas({
           bottom: 72,
           left: 72,
         },
-        bearing: 0,
         duration: 650,
       });
     }
@@ -797,7 +987,6 @@ function MapCanvas({
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    setSourceData(map, "robot-obstacles", obstacleGeoJSON(transform));
     setSourceData(map, "robot-axes", axisGeoJSON(transform));
     setSourceData(map, "robot-pose", poseGeoJSON(pose, transform));
     setSourceData(map, "robot-heading", headingGeoJSON(pose, transform));
@@ -884,8 +1073,14 @@ function MapCanvas({
       data-general-features={generalFeatureCount}
       data-aerial-contained={aerialViewportContained ? "true" : "false"}
       data-satellite-min-zoom={satelliteMinZoomRef.current.toFixed(2)}
+      data-general-map-opacity={baseMap === "satellite" ? "0" : "1"}
     >
       <div ref={containerRef} className="map-container" data-interaction-mode={interactionMode || "idle"} />
+      {showViewOrigin && (
+        <div className="view-origin-crosshair" aria-hidden="true">
+          <span /><i /><b>VIEW ORIGIN</b>
+        </div>
+      )}
 
       {!mapReady && !dataError && (
         <div className="map-loading">
@@ -1028,7 +1223,6 @@ function TransformEditor({
       <div className="transform-legend">
         <span><i className="axis-x" />X축</span>
         <span><i className="axis-y" />Y축</span>
-        <span><i className="obstacle-key" />로봇맵 장애물</span>
       </div>
     </section>
   );
@@ -1078,16 +1272,6 @@ function RobotMapPreview({ pose, path, goal, forbiddenZones }) {
           <rect x={viewX} y={viewY} width={viewWidth} height={viewHeight} fill="url(#local-grid)" />
           <line x1={viewX} y1="0" x2={viewX + viewWidth} y2="0" stroke="#ff6b70" strokeWidth=".8" opacity=".72" />
           <line x1="0" y1={viewY} x2="0" y2={viewY + viewHeight} stroke="#50a9ff" strokeWidth=".8" opacity=".72" />
-          {ROBOT_OBSTACLES.map((item) => (
-            <rect
-              key={item.id}
-              x={item.minX}
-              y={item.minY}
-              width={item.maxX - item.minX}
-              height={item.maxY - item.minY}
-              className="preview-obstacle"
-            />
-          ))}
           {forbiddenZones.map((zone, index) => (
             <polygon key={index} points={zone.map((point) => point.join(",")).join(" ")} className="preview-forbidden" />
           ))}
@@ -1142,6 +1326,7 @@ function SimulatorSidebar({
   finishZone,
   cancelMode,
   deleteZone,
+  clearMission,
 }) {
   return (
     <aside className={`simulator-panel ${collapsed ? "collapsed" : ""}`}>
@@ -1242,6 +1427,7 @@ function SimulatorSidebar({
               finishZone={finishZone}
               cancelMode={cancelMode}
               deleteZone={deleteZone}
+              clearMission={clearMission}
             />
           )}
 
@@ -1307,6 +1493,7 @@ function MissionTools({
   finishZone,
   cancelMode,
   deleteZone,
+  clearMission,
 }) {
   return (
     <div className="mission-tools">
@@ -1327,6 +1514,11 @@ function MissionTools({
         )}
         {!mode && forbiddenZones.length > 0 && (
           <button onClick={deleteZone}><Trash2 size={16} />최근 구역 삭제</button>
+        )}
+        {(goal || path.length > 0) && (
+          <button className="end-mission" onClick={clearMission}>
+            <CircleStop size={16} />임무 종료
+          </button>
         )}
       </div>
       <div className="mission-summary">
@@ -1354,6 +1546,11 @@ export default function App() {
   const [forbiddenZones, setForbiddenZones] = useState([]);
   const [draftZone, setDraftZone] = useState([]);
   const [baseMap, setBaseMap] = useState("satellite");
+  const [mapViewSettingsOpen, setMapViewSettingsOpen] = useState(false);
+  const [mapViewState, setMapViewState] = useState(null);
+  const [savedMapView, setSavedMapView] = useState(null);
+  const [mapViewSavedAt, setMapViewSavedAt] = useState("");
+  const [mapViewCommand, setMapViewCommand] = useState(null);
   const [layerVisibility, setLayerVisibility] = useState({
     forbidden: true,
     robotPose: true,
@@ -1379,6 +1576,19 @@ export default function App() {
     } catch {
       window.localStorage.removeItem(ALIGNMENT_STORAGE_KEY);
     }
+    try {
+      const storedView = JSON.parse(
+        window.localStorage.getItem(MAP_VIEW_STORAGE_KEY) ?? "null",
+      );
+      if (isValidMapView(storedView)) {
+        setSavedMapView(storedView);
+        setMapViewState(storedView);
+        setMapViewSavedAt(storedView.savedAtLabel ?? "저장값 복원");
+        setBaseMap(storedView.baseMap);
+      }
+    } catch {
+      window.localStorage.removeItem(MAP_VIEW_STORAGE_KEY);
+    }
   }, []);
 
   const isAlignmentSaved = useMemo(
@@ -1388,6 +1598,18 @@ export default function App() {
       ),
     [savedTransform, transform],
   );
+
+  const isMapViewSaved = useMemo(() => {
+    if (!mapViewState || !savedMapView || baseMap !== savedMapView.baseMap) {
+      return false;
+    }
+    return (
+      Math.abs(mapViewState.center[0] - savedMapView.center[0]) < 1e-8 &&
+      Math.abs(mapViewState.center[1] - savedMapView.center[1]) < 1e-8 &&
+      Math.abs(mapViewState.zoom - savedMapView.zoom) < 0.005 &&
+      Math.abs(mapViewState.bearing - savedMapView.bearing) < 0.05
+    );
+  }, [baseMap, mapViewState, savedMapView]);
 
   const moveRobot = useCallback((action) => {
     setPose((current) => {
@@ -1494,6 +1716,31 @@ export default function App() {
     setAlignmentSavedAt(savedAtLabel);
   };
 
+  const issueMapViewCommand = (action) => {
+    setMapViewCommand({ id: Date.now() + Math.random(), action });
+  };
+
+  const saveMapView = () => {
+    if (!mapViewState) return;
+    const savedAtLabel = new Intl.DateTimeFormat("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date());
+    const nextSavedView = {
+      ...mapViewState,
+      baseMap,
+      savedAtLabel,
+    };
+    window.localStorage.setItem(
+      MAP_VIEW_STORAGE_KEY,
+      JSON.stringify(nextSavedView),
+    );
+    setSavedMapView(nextSavedView);
+    setMapViewSavedAt(savedAtLabel);
+  };
+
   const toggleLayer = (id) => {
     setLayerVisibility((current) => ({ ...current, [id]: !current[id] }));
   };
@@ -1532,6 +1779,13 @@ export default function App() {
     setSequence(0);
   };
 
+  const clearMission = () => {
+    setGoal(null);
+    setPath([]);
+    setDraftZone([]);
+    setInteractionMode("");
+  };
+
   return (
     <main className="app">
       <header className="command-header">
@@ -1544,12 +1798,31 @@ export default function App() {
           <span><small>MULTI-RESOLUTION AERIAL</small><b>서오릉 통합 로봇 관제</b></span>
         </div>
         <div className="header-meta">
+          <button
+            className={`header-settings-button ${mapViewSettingsOpen ? "active" : ""}`}
+            onClick={() => setMapViewSettingsOpen((open) => !open)}
+            aria-label="지도 화면 설정"
+            aria-expanded={mapViewSettingsOpen}
+          >
+            <Settings2 size={17} />
+          </button>
           <span className="dataset-status">
             <Database size={15} /><span><small>GEODATA</small><b>2 GOV SOURCES</b></span>
           </span>
           <span className="system-status"><i />ONLINE</span>
         </div>
       </header>
+
+      <MapViewSettings
+        open={mapViewSettingsOpen}
+        onClose={() => setMapViewSettingsOpen(false)}
+        camera={mapViewState}
+        baseMap={baseMap}
+        onCommand={issueMapViewCommand}
+        onSave={saveMapView}
+        isSaved={isMapViewSaved}
+        savedAt={mapViewSavedAt}
+      />
 
       <div className="workspace">
         <MapCanvas
@@ -1568,6 +1841,10 @@ export default function App() {
           goal={goal}
           forbiddenZones={forbiddenZones}
           draftZone={draftZone}
+          savedMapView={savedMapView}
+          mapViewCommand={mapViewCommand}
+          onMapViewChange={setMapViewState}
+          showViewOrigin={mapViewSettingsOpen}
         />
 
         <SimulatorSidebar
@@ -1604,6 +1881,7 @@ export default function App() {
             setInteractionMode("");
           }}
           deleteZone={() => setForbiddenZones((zones) => zones.slice(0, -1))}
+          clearMission={clearMission}
         />
       </div>
 

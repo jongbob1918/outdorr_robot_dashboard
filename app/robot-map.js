@@ -11,15 +11,6 @@ export const DEFAULT_TRANSFORM = {
   rotationDeg: 0,
 };
 
-export const ROBOT_OBSTACLES = [
-  { id: "west-north", minX: -94, maxX: -58, minY: 43, maxY: 66 },
-  { id: "north-center", minX: -45, maxX: -12, minY: 27, maxY: 42 },
-  { id: "center", minX: -6, maxX: 27, minY: -5, maxY: 11 },
-  { id: "east-north", minX: 56, maxX: 94, minY: 42, maxY: 65 },
-  { id: "west-south", minX: -94, maxX: -55, minY: -64, maxY: -41 },
-  { id: "east-south", minX: 62, maxX: 94, minY: -63, maxY: -40 },
-];
-
 const METERS_PER_LAT = 110_540;
 const toRadians = (degrees) => (degrees * Math.PI) / 180;
 
@@ -106,25 +97,6 @@ export function routeGeoJSON(path, transform) {
       },
     },
   ]);
-}
-
-export function obstacleGeoJSON(transform) {
-  return featureCollection(
-    ROBOT_OBSTACLES.map((obstacle) => ({
-      type: "Feature",
-      properties: { id: obstacle.id },
-      geometry: {
-        type: "Polygon",
-        coordinates: [[
-          [obstacle.minX, obstacle.minY],
-          [obstacle.maxX, obstacle.minY],
-          [obstacle.maxX, obstacle.maxY],
-          [obstacle.minX, obstacle.maxY],
-          [obstacle.minX, obstacle.minY],
-        ].map((point) => localToLngLat(point, transform))],
-      },
-    })),
-  );
 }
 
 export function axisGeoJSON(transform, length = 70) {
@@ -239,21 +211,8 @@ export function pointInPolygon(point, polygon) {
   return inside;
 }
 
-function pointInObstacle([x, y], padding = 1.3) {
-  return ROBOT_OBSTACLES.some(
-    (obstacle) =>
-      x >= obstacle.minX - padding &&
-      x <= obstacle.maxX + padding &&
-      y >= obstacle.minY - padding &&
-      y <= obstacle.maxY + padding,
-  );
-}
-
 export function isBlocked(point, forbiddenZones = []) {
-  return (
-    pointInObstacle(point) ||
-    forbiddenZones.some((zone) => pointInPolygon(point, zone))
-  );
+  return forbiddenZones.some((zone) => pointInPolygon(point, zone));
 }
 
 function keyOf(x, y) {
@@ -329,15 +288,9 @@ export function planAStar(start, goal, forbiddenZones = [], resolution = 2) {
   ];
   const from = snap(start);
   const to = snap(goal);
-  const blockerCells = [
-    ...ROBOT_OBSTACLES.flatMap((obstacle) => [
-      [obstacle.minX / resolution, obstacle.minY / resolution],
-      [obstacle.maxX / resolution, obstacle.maxY / resolution],
-    ]),
-    ...forbiddenZones.flatMap((zone) =>
-      zone.map(([x, y]) => [x / resolution, y / resolution]),
-    ),
-  ];
+  const blockerCells = forbiddenZones.flatMap((zone) =>
+    zone.map(([x, y]) => [x / resolution, y / resolution]),
+  );
   const envelopePoints = [from, to, ...blockerCells];
   const directDistance = Math.hypot(to[0] - from[0], to[1] - from[1]);
   const margin = Math.max(20, Math.ceil(directDistance * 0.25));
