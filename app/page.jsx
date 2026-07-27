@@ -61,6 +61,7 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl);
 const INITIAL_POSE = { x: -22.4, y: -8.8, yaw: 32 };
 const ALIGNMENT_STORAGE_KEY = "seooreung-map-alignment-v1";
 const MAP_VIEW_STORAGE_KEY = "seooreung-map-view-v1";
+const FORBIDDEN_ZONES_STORAGE_KEY = "seooreung-forbidden-zones-v1";
 const GENERAL_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
 const AUTO_DRIVE_SPEED_MPS = 8;
 const TRAIL_RETENTION_MS = 30_000;
@@ -170,6 +171,23 @@ function mapCameraOptions(view) {
     bearing: view.bearing,
     pitch: Number.isFinite(view.pitch) ? view.pitch : 0,
   };
+}
+
+function isValidForbiddenZones(candidate) {
+  return (
+    Array.isArray(candidate) &&
+    candidate.every(
+      (zone) =>
+        Array.isArray(zone) &&
+        zone.length >= 3 &&
+        zone.every(
+          (point) =>
+            Array.isArray(point) &&
+            point.length === 2 &&
+            point.every(Number.isFinite),
+        ),
+    )
+  );
 }
 
 const GENERAL_OPACITY_PROPERTIES = {
@@ -786,21 +804,48 @@ function MapCanvas({
           });
 
           addGeoJSONSource(map, "robot-trail");
-          map.addLayer({
-            id: "robot-trail-line",
-            type: "line",
-            source: "robot-trail",
-            layout: {
-              visibility: "visible",
-              "line-cap": "round",
-              "line-join": "round",
+          [
+            {
+              id: "robot-trail-low",
+              minzoom: 0,
+              maxzoom: 16.5,
+              width: 2.4,
+              dasharray: [0.35, 2.8],
             },
-            paint: {
-              "line-color": "#8cf6dd",
-              "line-width": 3,
-              "line-dasharray": [1.4, 2],
-              "line-opacity": ["coalesce", ["get", "opacity"], 1],
+            {
+              id: "robot-trail-medium",
+              minzoom: 16.5,
+              maxzoom: 18.5,
+              width: 2.8,
+              dasharray: [0.75, 2.4],
             },
+            {
+              id: "robot-trail-high",
+              minzoom: 18.5,
+              maxzoom: 24,
+              width: 3.2,
+              dasharray: [1.4, 2],
+            },
+          ].forEach(({ id, minzoom, maxzoom, width, dasharray }) => {
+            map.addLayer({
+              id,
+              type: "line",
+              source: "robot-trail",
+              minzoom,
+              maxzoom,
+              metadata: { trailScale: id.replace("robot-trail-", "") },
+              layout: {
+                visibility: "visible",
+                "line-cap": "round",
+                "line-join": "round",
+              },
+              paint: {
+                "line-color": "#8cf6dd",
+                "line-width": width,
+                "line-dasharray": dasharray,
+                "line-opacity": ["coalesce", ["get", "opacity"], 1],
+              },
+            });
           });
 
           addGeoJSONSource(map, "goal-point");
@@ -1226,6 +1271,7 @@ function MapCanvas({
       data-pose-y={pose.y.toFixed(3)}
       data-trail-count={poseTrail.length}
       data-trail-style="dashed-time-fade"
+      data-trail-scale={zoom < 16.5 ? "low" : zoom < 18.5 ? "medium" : "high"}
       data-trail-oldest-opacity={
         poseTrail.length > 1
           ? Math.max(
@@ -1550,6 +1596,7 @@ function SimulatorSidebar({
   stopEventGenerator,
   clearEvents,
   missionStatus,
+  forbiddenZonesSavedAt,
 }) {
   return (
     <aside className={`simulator-panel ${collapsed ? "collapsed" : ""}`}>
@@ -1660,6 +1707,7 @@ function SimulatorSidebar({
               deleteZone={deleteZone}
               clearMission={clearMission}
               missionStatus={missionStatus}
+              forbiddenZonesSavedAt={forbiddenZonesSavedAt}
             />
           )}
 
@@ -1753,6 +1801,7 @@ function MissionTools({
   deleteZone,
   clearMission,
   missionStatus,
+  forbiddenZonesSavedAt,
 }) {
   return (
     <div className="mission-tools">
@@ -1799,6 +1848,14 @@ function MissionTools({
         <span><small>NO-GO ZONES</small><b data-testid="zone-count">{forbiddenZones.length}</b></span>
         {draftZone.length > 0 && <span><small>VERTICES</small><b>{draftZone.length}</b></span>}
       </div>
+      <div className="forbidden-save-state">
+        <Save size={13} />
+        <span>
+          금지구역 자동 저장
+          {forbiddenZonesSavedAt ? ` · ${forbiddenZonesSavedAt}` : ""}
+          {" "}· 새로고침 후 복원
+        </span>
+      </div>
     </div>
   );
 }
@@ -1825,6 +1882,8 @@ export default function App() {
   const [trailClock, setTrailClock] = useState(() => Date.now());
   const poseRef = useRef(INITIAL_POSE);
   const [forbiddenZones, setForbiddenZones] = useState([]);
+  const [forbiddenZonesStorageReady, setForbiddenZonesStorageReady] = useState(false);
+  const [forbiddenZonesSavedAt, setForbiddenZonesSavedAt] = useState("");
   const [draftZone, setDraftZone] = useState([]);
   const [baseMap, setBaseMap] = useState("satellite");
   const [mapViewSettingsOpen, setMapViewSettingsOpen] = useState(false);
@@ -1877,7 +1936,43 @@ export default function App() {
     } catch {
       window.localStorage.removeItem(MAP_VIEW_STORAGE_KEY);
     }
+    try {
+      const storedZones = JSON.parse(
+        window.localStorage.getItem(FORBIDDEN_ZONES_STORAGE_KEY) ?? "null",
+      );
+      const candidate = Array.isArray(storedZones)
+        ? storedZones
+        : storedZones?.zones;
+      if (isValidForbiddenZones(candidate)) {
+        setForbiddenZones(candidate);
+        setForbiddenZonesSavedAt(
+          typeof storedZones?.savedAtLabel === "string"
+            ? storedZones.savedAtLabel
+            : "저장값 복원",
+        );
+      } else if (storedZones) {
+        window.localStorage.removeItem(FORBIDDEN_ZONES_STORAGE_KEY);
+      }
+    } catch {
+      window.localStorage.removeItem(FORBIDDEN_ZONES_STORAGE_KEY);
+    }
+    setForbiddenZonesStorageReady(true);
   }, []);
+
+  useEffect(() => {
+    if (!forbiddenZonesStorageReady) return;
+    const savedAtLabel = new Intl.DateTimeFormat("ko-KR", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date());
+    window.localStorage.setItem(
+      FORBIDDEN_ZONES_STORAGE_KEY,
+      JSON.stringify({ zones: forbiddenZones, savedAtLabel }),
+    );
+    setForbiddenZonesSavedAt(savedAtLabel);
+  }, [forbiddenZones, forbiddenZonesStorageReady]);
 
   const isAlignmentSaved = useMemo(
     () =>
@@ -2340,6 +2435,7 @@ export default function App() {
           stopEventGenerator={() => setEventGeneratorRunning(false)}
           clearEvents={() => setRobotEvents([])}
           missionStatus={missionStatus}
+          forbiddenZonesSavedAt={forbiddenZonesSavedAt}
         />
       </div>
 

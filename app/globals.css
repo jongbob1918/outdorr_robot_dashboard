@@ -2155,6 +2155,27 @@ code {
   white-space: nowrap;
 }
 
+.forbidden-save-state {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  padding: 7px 9px;
+  border: 1px solid rgba(0, 214, 166, 0.18);
+  border-radius: 6px;
+  color: #73958d;
+  background: rgba(0, 214, 166, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 6px;
+  line-height: 1.45;
+}
+
+.forbidden-save-state svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
 .sidebar-section.compact {
   margin-top: 12px;
 }

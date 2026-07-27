@@ -320,6 +320,7 @@ const autonomousMotion = await evaluate(`({
   poseY: Number(document.querySelector('.map-viewport').dataset.poseY),
   trailCount: Number(document.querySelector('.map-viewport').dataset.trailCount),
   trailStyle: document.querySelector('.map-viewport').dataset.trailStyle,
+  trailScale: document.querySelector('.map-viewport').dataset.trailScale,
   oldestOpacity: Number(document.querySelector('.map-viewport').dataset.trailOldestOpacity),
 })`);
 await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -329,6 +330,7 @@ const fadedTrailOpacity = Number(
 if (
   !["moving", "arrived"].includes(autonomousMotion.status) ||
   autonomousMotion.trailStyle !== "dashed-time-fade" ||
+  autonomousMotion.trailScale !== "low" ||
   autonomousMotion.trailCount < 2 ||
   fadedTrailOpacity >= autonomousMotion.oldestOpacity
 ) {
@@ -352,6 +354,15 @@ await mouseClick(728, 504);
 await mouseClick(712, 504);
 await clickText("완료");
 await waitFor("document.querySelector('[data-testid=\"zone-count\"]')?.textContent.trim() === '1'");
+const storedForbiddenZones = JSON.parse(
+  await evaluate("localStorage.getItem('seooreung-forbidden-zones-v1')"),
+);
+if (
+  !Array.isArray(storedForbiddenZones?.zones) ||
+  storedForbiddenZones.zones.length !== 1
+) {
+  throw new Error(`Forbidden zones were not persisted: ${JSON.stringify(storedForbiddenZones)}`);
+}
 await clickText("임무 종료");
 await waitFor("document.querySelector('[data-testid=\"path-status\"]')?.textContent.trim() === 'READY'");
 const missionEnded = await evaluate(`({
@@ -369,6 +380,18 @@ if (
 ) {
   throw new Error(`Mission did not clear: ${JSON.stringify(missionEnded)}`);
 }
+await command("Page.reload", { ignoreCache: true });
+await waitFor("document.readyState === 'complete'");
+await waitFor("!document.querySelector('.map-loading')");
+await clickText("임무 편집");
+await waitFor("document.querySelector('[data-testid=\"zone-count\"]')?.textContent.trim() === '1'");
+const restoredForbiddenZones = await evaluate(`({
+  count: document.querySelector('[data-testid="zone-count"]').textContent.trim(),
+  saveState: document.querySelector('.forbidden-save-state').textContent.trim(),
+})`);
+if (!restoredForbiddenZones.saveState.includes("새로고침 후 복원")) {
+  throw new Error(`Forbidden zone restore status missing: ${JSON.stringify(restoredForbiddenZones)}`);
+}
 
 for (let index = 0; index < 10; index += 1) await clickText("지도 확대");
 await waitFor("document.querySelector('.map-viewport')?.dataset.aerialMatrix === '18'");
@@ -379,12 +402,17 @@ const highResolution = await evaluate(`({
   contained: document.querySelector('.map-viewport').dataset.aerialContained,
   tileRequests: performance.getEntriesByType('resource')
     .filter((entry) => entry.name.includes('/ngii-air-2024/18/')).length,
+  trailScale: document.querySelector('.map-viewport').dataset.trailScale,
   path: document.querySelector('[data-testid="path-status"]').textContent.trim(),
   zones: document.querySelector('[data-testid="zone-count"]').textContent.trim(),
 })`);
 const screenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 writeFileSync("/tmp/seooreung-dashboard.png", Buffer.from(screenshot.data, "base64"));
-if (highResolution.visibleTileCount < 1 || highResolution.contained !== "true") {
+if (
+  highResolution.visibleTileCount < 1 ||
+  highResolution.contained !== "true" ||
+  highResolution.trailScale !== "high"
+) {
   throw new Error(`High-resolution matrix 18 tiles failed: ${JSON.stringify(highResolution)}`);
 }
 
@@ -401,6 +429,7 @@ console.log(JSON.stringify({
   autonomousMotion,
   fadedTrailOpacity,
   missionEnded,
+  restoredForbiddenZones,
   highResolution,
 }, null, 2));
 socket.close();
