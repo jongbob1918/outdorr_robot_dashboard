@@ -62,11 +62,6 @@ const INITIAL_POSE = { x: -22.4, y: -8.8, yaw: 32 };
 const ALIGNMENT_STORAGE_KEY = "seooreung-map-alignment-v1";
 const MAP_VIEW_STORAGE_KEY = "seooreung-map-view-v1";
 const GENERAL_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
-const ROBOT_EVENTS = [
-  { id: "battery-check", point: [-68, 24], severity: "info" },
-  { id: "surface-alert", point: [42, -30], severity: "warning" },
-  { id: "inspection", point: [82, 48], severity: "info" },
-];
 const EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 const EPSG_5179 =
   "+proj=tmerc +lat_0=38 +lon_0=127.5 +k=0.9996 +x_0=1000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs";
@@ -252,12 +247,16 @@ function draftPointsGeoJSON(points, transform) {
   };
 }
 
-function eventGeoJSON(transform) {
+function eventGeoJSON(events, transform) {
   return {
     type: "FeatureCollection",
-    features: ROBOT_EVENTS.map((event) => ({
+    features: events.map((event) => ({
       type: "Feature",
-      properties: { id: event.id, severity: event.severity },
+      properties: {
+        id: event.id,
+        severity: event.severity,
+        createdAt: event.createdAt,
+      },
       geometry: {
         type: "Point",
         coordinates: localToLngLat(event.point, transform),
@@ -398,6 +397,7 @@ function MapCanvas({
   goal,
   forbiddenZones,
   draftZone,
+  robotEvents,
   savedMapView,
   mapViewCommand,
   onMapViewChange,
@@ -1071,13 +1071,13 @@ function MapCanvas({
     setSourceData(map, "robot-axes", axisGeoJSON(transform));
     setSourceData(map, "robot-pose", poseGeoJSON(pose, transform));
     setSourceData(map, "robot-heading", headingGeoJSON(pose, transform));
-    setSourceData(map, "robot-events", eventGeoJSON(transform));
+    setSourceData(map, "robot-events", eventGeoJSON(robotEvents, transform));
     setSourceData(map, "planned-route", routeGeoJSON(path, transform));
     setSourceData(map, "goal-point", pointGeoJSON(goal, transform));
     setSourceData(map, "forbidden-zones", forbiddenGeoJSON(forbiddenZones, transform, draftZone));
     setSourceData(map, "draft-points", draftPointsGeoJSON(draftZone, transform));
     refreshGrid();
-  }, [draftZone, forbiddenZones, goal, mapReady, path, pose, refreshGrid, transform]);
+  }, [draftZone, forbiddenZones, goal, mapReady, path, pose, refreshGrid, robotEvents, transform]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -1161,6 +1161,7 @@ function MapCanvas({
       data-aerial-contained={aerialViewportContained ? "true" : "false"}
       data-satellite-min-zoom={satelliteMinZoomRef.current.toFixed(2)}
       data-general-map-opacity={baseMap === "satellite" ? "0" : "1"}
+      data-event-count={robotEvents.length}
     >
       <img
         ref={lowZoomAerialRef}
@@ -1242,7 +1243,9 @@ function MapCanvas({
             ? publishing
               ? "POSE STREAM · 10 HZ"
               : "POSE STREAM · STANDBY"
-            : "A* MISSION EDITOR"}
+            : toolMode === "events"
+              ? `EVENT TEST · ${robotEvents.length}`
+              : "A* MISSION EDITOR"}
       </div>
 
       <div className="national-attribution">
@@ -1393,6 +1396,47 @@ function PoseValue({ label, value, unit }) {
   );
 }
 
+function EventTestPanel({
+  events,
+  running,
+  onStart,
+  onStop,
+  onClear,
+}) {
+  const latest = events.at(-1);
+  return (
+    <section className="event-test-panel" aria-label="이벤트 랜덤 발생기">
+      <div className="event-test-heading">
+        <span><BellRing size={16} /></span>
+        <div><small>RANDOM EVENT GENERATOR</small><strong>이벤트 테스트</strong></div>
+        <i className={running ? "live" : ""} />
+      </div>
+      <div className="event-test-stats">
+        <span><small>STATUS</small><b>{running ? "발생 중" : "정지"}</b></span>
+        <span><small>EVENTS</small><b data-testid="event-count">{events.length}</b></span>
+        <span>
+          <small>LATEST</small>
+          <b>{latest ? latest.severity.toUpperCase() : "—"}</b>
+        </span>
+      </div>
+      <p>
+        로봇맵 범위 안에서 정보·경고 이벤트 좌표를 무작위로 생성해 메인 지도에 표시합니다.
+      </p>
+      <div className="event-test-actions">
+        <button className="publish-button" onClick={onStart} disabled={running}>
+          <BellRing size={16} />랜덤 발생 시작
+        </button>
+        <button className="stop-button" onClick={onStop} disabled={!running}>
+          <CircleStop size={16} />발생 종료
+        </button>
+        <button className="event-clear-button" onClick={onClear} disabled={!events.length}>
+          <Trash2 size={15} />이벤트 지우기
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function SimulatorSidebar({
   collapsed,
   setCollapsed,
@@ -1422,6 +1466,11 @@ function SimulatorSidebar({
   cancelMode,
   deleteZone,
   clearMission,
+  robotEvents,
+  eventGeneratorRunning,
+  startEventGenerator,
+  stopEventGenerator,
+  clearEvents,
 }) {
   return (
     <aside className={`simulator-panel ${collapsed ? "collapsed" : ""}`}>
@@ -1455,6 +1504,9 @@ function SimulatorSidebar({
             </button>
             <button className={toolMode === "mission" ? "active" : ""} onClick={() => setToolMode("mission")}>
               <Navigation size={15} /><span>임무 편집</span>
+            </button>
+            <button className={toolMode === "events" ? "active" : ""} onClick={() => setToolMode("events")}>
+              <BellRing size={15} /><span>이벤트 테스트</span>
             </button>
           </nav>
 
@@ -1526,19 +1578,41 @@ function SimulatorSidebar({
             />
           )}
 
+          {toolMode === "events" && (
+            <EventTestPanel
+              events={robotEvents}
+              running={eventGeneratorRunning}
+              onStart={startEventGenerator}
+              onStop={stopEventGenerator}
+              onClear={clearEvents}
+            />
+          )}
+
           <div className="sidebar-footer">
             <Gauge size={15} />
             <span>
-              <small>{toolMode === "align" ? "MAP TRANSFORM" : toolMode === "pose" ? "SIMULATOR CLOCK" : "A* PLANNER"}</small>
+              <small>
+                {toolMode === "align"
+                  ? "MAP TRANSFORM"
+                  : toolMode === "pose"
+                    ? "SIMULATOR CLOCK"
+                    : toolMode === "events"
+                      ? "EVENT GENERATOR"
+                      : "A* PLANNER"}
+              </small>
               <b>
                 {toolMode === "align"
                   ? `${transform.rotationDeg.toFixed(1)}° · LOCAL → WGS84`
                   : toolMode === "pose"
                     ? publishing ? "RUNNING · 10 Hz" : "PAUSED"
-                    : path.length > 1 ? "ROUTE READY" : "WAITING TARGET"}
+                    : toolMode === "events"
+                      ? eventGeneratorRunning
+                        ? `RUNNING · ${robotEvents.length} EVENTS`
+                        : `STOPPED · ${robotEvents.length} EVENTS`
+                      : path.length > 1 ? "ROUTE READY" : "WAITING TARGET"}
               </b>
             </span>
-            <i className={publishing || path.length > 1 ? "live" : ""} />
+            <i className={publishing || path.length > 1 || eventGeneratorRunning ? "live" : ""} />
           </div>
         </>
       )}
@@ -1631,8 +1705,11 @@ export default function App() {
   const [transform, setTransform] = useState(DEFAULT_TRANSFORM);
   const [savedTransform, setSavedTransform] = useState(DEFAULT_TRANSFORM);
   const [alignmentSavedAt, setAlignmentSavedAt] = useState("");
-  const [publishing, setPublishing] = useState(false);
+  const [publishing, setPublishing] = useState(true);
   const [sequence, setSequence] = useState(0);
+  const [robotEvents, setRobotEvents] = useState([]);
+  const [eventGeneratorRunning, setEventGeneratorRunning] = useState(false);
+  const eventSequenceRef = useRef(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeKey, setActiveKey] = useState("");
   const [interactionMode, setInteractionMode] = useState("");
@@ -1751,6 +1828,32 @@ export default function App() {
     const timer = window.setInterval(() => setSequence((value) => value + 1), 100);
     return () => window.clearInterval(timer);
   }, [publishing]);
+
+  const generateRandomEvent = useCallback(() => {
+    eventSequenceRef.current += 1;
+    const x =
+      ROBOT_EXTENT.minX +
+      Math.random() * (ROBOT_EXTENT.maxX - ROBOT_EXTENT.minX);
+    const y =
+      ROBOT_EXTENT.minY +
+      Math.random() * (ROBOT_EXTENT.maxY - ROBOT_EXTENT.minY);
+    setRobotEvents((current) => [
+      ...current.slice(-49),
+      {
+        id: `event-${eventSequenceRef.current}`,
+        point: [Number(x.toFixed(2)), Number(y.toFixed(2))],
+        severity: Math.random() < 0.35 ? "warning" : "info",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }, []);
+
+  useEffect(() => {
+    if (!eventGeneratorRunning) return undefined;
+    generateRandomEvent();
+    const timer = window.setInterval(generateRandomEvent, 800);
+    return () => window.clearInterval(timer);
+  }, [eventGeneratorRunning, generateRandomEvent]);
 
   useEffect(() => {
     if (toolMode === "align") return undefined;
@@ -1896,10 +1999,6 @@ export default function App() {
           <span className="brand-icon"><Crosshair size={22} /></span>
           <span><b>SEOOREUNG</b><small>ROBOT MAP LAB</small></span>
         </a>
-        <div className="header-map-status">
-          <Satellite size={16} />
-          <span><small>MULTI-RESOLUTION AERIAL</small><b>서오릉 통합 로봇 관제</b></span>
-        </div>
         <div className="header-meta">
           <button
             className={`header-settings-button ${mapViewSettingsOpen ? "active" : ""}`}
@@ -1944,6 +2043,7 @@ export default function App() {
           goal={goal}
           forbiddenZones={forbiddenZones}
           draftZone={draftZone}
+          robotEvents={robotEvents}
           savedMapView={savedMapView}
           mapViewCommand={mapViewCommand}
           onMapViewChange={setMapViewState}
@@ -1985,6 +2085,11 @@ export default function App() {
           }}
           deleteZone={() => setForbiddenZones((zones) => zones.slice(0, -1))}
           clearMission={clearMission}
+          robotEvents={robotEvents}
+          eventGeneratorRunning={eventGeneratorRunning}
+          startEventGenerator={() => setEventGeneratorRunning(true)}
+          stopEventGenerator={() => setEventGeneratorRunning(false)}
+          clearEvents={() => setRobotEvents([])}
         />
       </div>
 

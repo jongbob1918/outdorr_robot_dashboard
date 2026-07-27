@@ -115,17 +115,21 @@ const initial = await evaluate(`({
     opacity: getComputedStyle(document.querySelector('.low-zoom-aerial')).opacity,
     naturalWidth: document.querySelector('.low-zoom-aerial').naturalWidth,
   },
+  headerCenterRemoved:
+    !document.body.innerText.includes('MULTI-RESOLUTION AERIAL') &&
+    !document.body.innerText.includes('서오릉 통합 로봇 관제'),
 })`);
 if (
   initial.topStages !== 0 ||
-  initial.tabs.length !== 3 ||
+  initial.tabs.length !== 4 ||
   !initial.preview ||
-  initial.posePublished !== "hidden" ||
+  initial.posePublished !== "visible" ||
   !initial.manualInsideSidebar ||
   initial.previewObstacles !== 0 ||
   initial.generalMapOpacity !== "0" ||
   initial.lowZoomAerial.opacity !== "1" ||
-  initial.lowZoomAerial.naturalWidth !== 1280
+  initial.lowZoomAerial.naturalWidth !== 1280 ||
+  !initial.headerCenterRemoved
 ) {
   throw new Error(`Unified sidebar failed: ${JSON.stringify(initial)}`);
 }
@@ -201,8 +205,6 @@ const transformRestored = await evaluate("document.querySelector('.transform-rea
 if (transformRestored !== transformAfter) throw new Error("Alignment did not survive reload");
 
 await clickText("로봇 포즈");
-await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
-await clickText("포즈 발행");
 await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'visible'");
 const sequenceBefore = Number(
   (await evaluate("document.querySelector('.section-title small').textContent")).replace(/\D/g, ""),
@@ -216,6 +218,32 @@ const poseScreenshot = await command("Page.captureScreenshot", { format: "png", 
 writeFileSync("/tmp/seooreung-pose-sidebar.png", Buffer.from(poseScreenshot.data, "base64"));
 await clickText("발행 중단");
 await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
+await clickText("포즈 발행");
+await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'visible'");
+
+await clickText("이벤트 테스트");
+await waitFor("document.querySelector('[data-testid=\"event-count\"]')?.textContent === '0'");
+await clickText("랜덤 발생 시작");
+await waitFor("Number(document.querySelector('[data-testid=\"event-count\"]')?.textContent) >= 2");
+const eventCountWhileRunning = Number(
+  await evaluate("document.querySelector('[data-testid=\"event-count\"]').textContent"),
+);
+if (
+  Number(await evaluate("document.querySelector('.map-viewport').dataset.eventCount")) !==
+  eventCountWhileRunning
+) {
+  throw new Error("Random events were not published to the map");
+}
+await clickText("발생 종료");
+await new Promise((resolve) => setTimeout(resolve, 1_100));
+const eventCountAfterStop = Number(
+  await evaluate("document.querySelector('[data-testid=\"event-count\"]').textContent"),
+);
+if (eventCountAfterStop !== eventCountWhileRunning) {
+  throw new Error("Event generator did not stop");
+}
+const eventScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+writeFileSync("/tmp/seooreung-event-generator.png", Buffer.from(eventScreenshot.data, "base64"));
 
 await clickText("레이어");
 await clickText("일반");
@@ -245,6 +273,7 @@ await clickSelector(".layer-switches [role='switch']:nth-child(2)");
 await waitFor(
   "[...document.querySelectorAll('.layer-switches [role=\"switch\"]')].find((button) => button.textContent.includes('로봇 포즈'))?.getAttribute('aria-checked') === 'false'",
 );
+await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
 await clickSelector(".base-map-options button:first-child");
 await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'satellite'");
 await clickSelector(".layer-control-trigger");
