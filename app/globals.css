@@ -331,6 +331,20 @@ button {
 .map-container {
   position: absolute;
   inset: 0;
+  z-index: 1;
+}
+
+.low-zoom-aerial {
+  width: 1280px;
+  height: 1280px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .map-container::after {

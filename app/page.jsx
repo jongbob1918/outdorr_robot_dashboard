@@ -91,6 +91,21 @@ function projectedTileCoordinates(aerial, level, row, column) {
   ];
 }
 
+function projectedLevelCoordinates(aerial, level) {
+  const span = aerial.tileSize * level.resolutionMetersPerPixel;
+  const { tileRange } = level;
+  const minX = aerial.origin[0] + tileRange.columnStart * span;
+  const maxX = aerial.origin[0] + (tileRange.columnEnd + 1) * span;
+  const maxY = aerial.origin[1] - tileRange.rowStart * span;
+  const minY = aerial.origin[1] - (tileRange.rowEnd + 1) * span;
+  return [
+    proj4(EPSG_5179, EPSG_4326, [minX, maxY]),
+    proj4(EPSG_5179, EPSG_4326, [maxX, maxY]),
+    proj4(EPSG_5179, EPSG_4326, [maxX, minY]),
+    proj4(EPSG_5179, EPSG_4326, [minX, minY]),
+  ];
+}
+
 function aerialLevelBoundsWgs84(aerial, level) {
   const span = aerial.tileSize * level.resolutionMetersPerPixel;
   const { tileRange } = level;
@@ -104,13 +119,18 @@ function aerialLevelBoundsWgs84(aerial, level) {
   ];
 }
 
-function minimumZoomForBounds(map, bounds) {
+function minimumZoomForBounds(map, bounds, bearing = 0) {
   const southWest = maplibregl.MercatorCoordinate.fromLngLat(bounds[0]);
   const northEast = maplibregl.MercatorCoordinate.fromLngLat(bounds[1]);
   const width = Math.max(1, map.getContainer().clientWidth);
   const height = Math.max(1, map.getContainer().clientHeight);
-  const zoomX = Math.log2(width / (512 * Math.abs(northEast.x - southWest.x)));
-  const zoomY = Math.log2(height / (512 * Math.abs(southWest.y - northEast.y)));
+  const radians = (Math.abs(bearing) * Math.PI) / 180;
+  const effectiveWidth =
+    Math.abs(width * Math.cos(radians)) + Math.abs(height * Math.sin(radians));
+  const effectiveHeight =
+    Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians));
+  const zoomX = Math.log2(effectiveWidth / (512 * Math.abs(northEast.x - southWest.x)));
+  const zoomY = Math.log2(effectiveHeight / (512 * Math.abs(southWest.y - northEast.y)));
   return Math.min(20, Math.max(12, Math.max(zoomX, zoomY) + 0.04));
 }
 
@@ -385,6 +405,7 @@ function MapCanvas({
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
+  const lowZoomAerialRef = useRef(null);
   const nationalDataRef = useRef(null);
   const aerialTileIdsRef = useRef(new Set());
   const generalLayerPaintRef = useRef([]);
@@ -420,6 +441,33 @@ function MapCanvas({
     onMapViewChange,
   };
 
+  const updateLowZoomAerial = useCallback(() => {
+    const map = mapRef.current;
+    const image = lowZoomAerialRef.current;
+    const aerial = nationalDataRef.current?.aerial;
+    if (!map || !image || !aerial) return;
+    const level = aerial.levels.find(({ matrix }) => matrix === 15);
+    const visible =
+      stateRef.current.baseMap === "satellite" &&
+      aerialLevelForZoom(aerial.levels, map.getZoom()).matrix === 15;
+    image.style.opacity = visible ? "1" : "0";
+    if (!visible || !level) return;
+    const [topLeft, topRight, , bottomLeft] = projectedLevelCoordinates(
+      aerial,
+      level,
+    ).map((coordinate) => map.project(coordinate));
+    const width = image.naturalWidth || 1280;
+    const height = image.naturalHeight || 1280;
+    image.style.transform = `matrix(
+      ${(topRight.x - topLeft.x) / width},
+      ${(topRight.y - topLeft.y) / width},
+      ${(bottomLeft.x - topLeft.x) / height},
+      ${(bottomLeft.y - topLeft.y) / height},
+      ${topLeft.x},
+      ${topLeft.y}
+    )`;
+  }, []);
+
   const refreshGrid = useCallback(() => {
     const map = mapRef.current;
     if (!map?.getSource("robot-grid")) return;
@@ -435,7 +483,9 @@ function MapCanvas({
     const aerial = nationalDataRef.current?.aerial;
     if (!map || !aerial || !map.getStyle()) return;
     const { level, tiles } = visibleAerialTiles(map, aerial);
-    setVisibleAerialTileCount(tiles.length);
+    const renderTiles = level.matrix === 15 ? [] : tiles;
+    setVisibleAerialTileCount(level.matrix === 15 ? 1 : renderTiles.length);
+    updateLowZoomAerial();
     const coverageBounds = aerialLevelBoundsWgs84(aerial, level);
     if (stateRef.current.baseMap === "satellite") {
       if (aerialBoundaryMatrixRef.current !== level.matrix) {
@@ -451,7 +501,7 @@ function MapCanvas({
       );
     }
     const nextIds = new Set();
-    for (const { row, column } of tiles) {
+    for (const { row, column } of renderTiles) {
       const id = `ngii-${level.matrix}-${row}-${column}`;
       nextIds.add(id);
       if (map.getSource(id)) continue;
@@ -500,7 +550,7 @@ function MapCanvas({
     }
     setAerialLevel(level);
     map.triggerRepaint();
-  }, []);
+  }, [updateLowZoomAerial]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return undefined;
@@ -785,6 +835,7 @@ function MapCanvas({
         });
 
         map.on("zoom", () => setZoom(map.getZoom()));
+        map.on("move", updateLowZoomAerial);
         map.on("moveend", () => {
           refreshGrid();
           refreshAerialTiles();
@@ -796,24 +847,25 @@ function MapCanvas({
         });
         map.on("rotateend", () => {
           if (stateRef.current.baseMap === "satellite") {
-            map.setMinZoom(
-              Math.abs(map.getBearing()) > 0.05
-                ? Math.max(17, satelliteMinZoomRef.current)
-                : satelliteMinZoomRef.current,
+            const bounds = aerialLevelBoundsWgs84(
+              nationalDataRef.current.aerial,
+              nationalDataRef.current.aerial.levels[0],
             );
+            map.setMinZoom(minimumZoomForBounds(map, bounds, map.getBearing()));
           }
           stateRef.current.onMapViewChange?.(mapCameraSnapshot(map));
         });
         map.on("resize", () => {
           if (stateRef.current.baseMap === "satellite") {
+            const bounds = aerialLevelBoundsWgs84(
+              metadata.aerial,
+              metadata.aerial.levels[0],
+            );
             satelliteMinZoomRef.current = minimumZoomForBounds(
               map,
-              aerialLevelBoundsWgs84(
-                metadata.aerial,
-                metadata.aerial.levels[0],
-              ),
+              bounds,
             );
-            map.setMinZoom(satelliteMinZoomRef.current);
+            map.setMinZoom(minimumZoomForBounds(map, bounds, map.getBearing()));
             refreshAerialTiles();
           }
         });
@@ -850,7 +902,7 @@ function MapCanvas({
       aerialBoundaryMatrixRef.current = null;
       generalLayerPaintRef.current = [];
     };
-  }, [refreshAerialTiles, refreshGrid]);
+  }, [refreshAerialTiles, refreshGrid, updateLowZoomAerial]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -886,18 +938,22 @@ function MapCanvas({
     const duration = 180;
     const rotateTo = (bearing) => {
       if (baseMap === "satellite") {
-        map.setMinZoom(
-          Math.abs(bearing) > 0.05
-            ? Math.max(17, satelliteMinZoomRef.current)
-            : satelliteMinZoomRef.current,
-        );
+        const aerial = nationalDataRef.current?.aerial;
+        const bounds = aerial && aerialLevelBoundsWgs84(aerial, aerial.levels[0]);
+        const minimumZoom = bounds
+          ? minimumZoomForBounds(map, bounds, bearing)
+          : satelliteMinZoomRef.current;
+        map.setMinZoom(minimumZoom);
+        map.easeTo({
+          bearing,
+          zoom: Math.max(minimumZoom, map.getZoom()),
+          duration: 320,
+        });
+        return;
       }
       map.easeTo({
         bearing,
-        zoom:
-          baseMap === "satellite" && Math.abs(bearing) > 0.05
-            ? Math.max(17, map.getZoom())
-            : map.getZoom(),
+        zoom: map.getZoom(),
         duration: 320,
       });
     };
@@ -931,13 +987,16 @@ function MapCanvas({
       map.setMaxBounds(null);
       aerialBoundaryMatrixRef.current = null;
     } else {
+      const aerial = nationalDataRef.current?.aerial;
+      const bounds = aerial && aerialLevelBoundsWgs84(aerial, aerial.levels[0]);
       map.setMinZoom(
-        Math.abs(map.getBearing()) > 0.05
-          ? Math.max(17, satelliteMinZoomRef.current)
+        bounds
+          ? minimumZoomForBounds(map, bounds, map.getBearing())
           : satelliteMinZoomRef.current,
       );
     }
     refreshAerialTiles();
+    updateLowZoomAerial();
     const align = toolMode === "align" && overlayVisible ? "visible" : "none";
     const poseVisible =
       publishing && layerVisibility.robotPose ? "visible" : "none";
@@ -1003,6 +1062,7 @@ function MapCanvas({
     refreshAerialTiles,
     refreshGrid,
     toolMode,
+    updateLowZoomAerial,
   ]);
 
   useEffect(() => {
@@ -1051,10 +1111,11 @@ function MapCanvas({
       if (map.getZoom() > 15) map.easeTo({ zoom: 15, duration: 420 });
     } else if (satelliteCameraRef.current) {
       const satelliteBearing = satelliteCameraRef.current.bearing ?? 0;
-      const minimumZoom =
-        Math.abs(satelliteBearing) > 0.05
-          ? Math.max(17, satelliteMinZoomRef.current)
-          : satelliteMinZoomRef.current;
+      const aerial = nationalDataRef.current?.aerial;
+      const bounds = aerial && aerialLevelBoundsWgs84(aerial, aerial.levels[0]);
+      const minimumZoom = bounds
+        ? minimumZoomForBounds(map, bounds, satelliteBearing)
+        : satelliteMinZoomRef.current;
       map.setMinZoom(minimumZoom);
       map.easeTo({
         ...satelliteCameraRef.current,
@@ -1101,6 +1162,14 @@ function MapCanvas({
       data-satellite-min-zoom={satelliteMinZoomRef.current.toFixed(2)}
       data-general-map-opacity={baseMap === "satellite" ? "0" : "1"}
     >
+      <img
+        ref={lowZoomAerialRef}
+        className="low-zoom-aerial"
+        src="/data/ngii-air-2024/15/mosaic.jpg"
+        alt=""
+        aria-hidden="true"
+        onLoad={updateLowZoomAerial}
+      />
       <div ref={containerRef} className="map-container" data-interaction-mode={interactionMode || "idle"} />
       {showViewOrigin && (
         <div className="view-origin-crosshair" aria-hidden="true">

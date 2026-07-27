@@ -111,6 +111,10 @@ const initial = await evaluate(`({
   manualInsideSidebar: Boolean(document.querySelector('.simulator-panel .sidebar-control-dock')),
   previewObstacles: document.querySelectorAll('.preview-obstacle').length,
   generalMapOpacity: document.querySelector('.map-viewport').dataset.generalMapOpacity,
+  lowZoomAerial: {
+    opacity: getComputedStyle(document.querySelector('.low-zoom-aerial')).opacity,
+    naturalWidth: document.querySelector('.low-zoom-aerial').naturalWidth,
+  },
 })`);
 if (
   initial.topStages !== 0 ||
@@ -119,7 +123,9 @@ if (
   initial.posePublished !== "hidden" ||
   !initial.manualInsideSidebar ||
   initial.previewObstacles !== 0 ||
-  initial.generalMapOpacity !== "0"
+  initial.generalMapOpacity !== "0" ||
+  initial.lowZoomAerial.opacity !== "1" ||
+  initial.lowZoomAerial.naturalWidth !== 1280
 ) {
   throw new Error(`Unified sidebar failed: ${JSON.stringify(initial)}`);
 }
@@ -130,9 +136,6 @@ const mapViewBefore = await evaluate("document.querySelector('.map-camera-readou
 await clickText("+5°");
 await waitFor(
   "!document.querySelector('.map-view-save-state')?.classList.contains('saved')",
-);
-await waitFor(
-  "Number(document.querySelector('.map-camera-readout span:nth-child(2) b')?.textContent) >= 17",
 );
 await waitFor(
   "Math.abs(Number.parseFloat(document.querySelector('.map-camera-readout span:nth-child(3) b')?.textContent) - 5) < 0.1",
@@ -252,11 +255,14 @@ const satelliteBoundary = await evaluate(`({
   minimumZoom: Number(document.querySelector('.map-viewport').dataset.satelliteMinZoom),
   contained: document.querySelector('.map-viewport').dataset.aerialContained,
   generalMapOpacity: document.querySelector('.map-viewport').dataset.generalMapOpacity,
+  lowZoomAerialOpacity: getComputedStyle(document.querySelector('.low-zoom-aerial')).opacity,
 })`);
 if (
   satelliteBoundary.contained !== "true" ||
+  satelliteBoundary.zoom > 15.5 ||
   satelliteBoundary.zoom + 0.1 < satelliteBoundary.minimumZoom ||
-  satelliteBoundary.generalMapOpacity !== "0"
+  satelliteBoundary.generalMapOpacity !== "0" ||
+  satelliteBoundary.lowZoomAerialOpacity !== "1"
 ) {
   throw new Error(`Satellite boundary failed: ${JSON.stringify(satelliteBoundary)}`);
 }
