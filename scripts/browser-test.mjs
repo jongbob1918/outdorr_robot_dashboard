@@ -134,12 +134,20 @@ await waitFor(
 await waitFor(
   "Number(document.querySelector('.map-camera-readout span:nth-child(2) b')?.textContent) >= 17",
 );
+await waitFor(
+  "Math.abs(Number.parseFloat(document.querySelector('.map-camera-readout span:nth-child(3) b')?.textContent) - 5) < 0.1",
+);
 await clickText("현재 화면 저장");
 await waitFor("document.querySelector('.map-view-save-state')?.classList.contains('saved')");
 const storedMapView = await evaluate("localStorage.getItem('seooreung-map-view-v1')");
 if (!storedMapView) throw new Error("Map view was not persisted");
 const savedMapViewReadout = await evaluate("document.querySelector('.map-camera-readout').innerText");
 if (savedMapViewReadout === mapViewBefore) throw new Error("Map view rotation did not update");
+await evaluate(`(() => {
+  const stored = JSON.parse(localStorage.getItem('seooreung-map-view-v1'));
+  stored.pitch = null;
+  localStorage.setItem('seooreung-map-view-v1', JSON.stringify(stored));
+})()`);
 await new Promise((resolve) => setTimeout(resolve, 1_500));
 const settingsScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 writeFileSync("/tmp/seooreung-map-settings.png", Buffer.from(settingsScreenshot.data, "base64"));
@@ -151,6 +159,12 @@ await waitFor("document.querySelector('.map-view-save-state')?.classList.contain
 const restoredMapViewReadout = await evaluate("document.querySelector('.map-camera-readout').innerText");
 if (restoredMapViewReadout !== savedMapViewReadout) {
   throw new Error("Saved map view did not survive reload");
+}
+const migratedMapView = JSON.parse(
+  await evaluate("localStorage.getItem('seooreung-map-view-v1')"),
+);
+if (migratedMapView.pitch !== 0) {
+  throw new Error(`Legacy null camera value was not normalized: ${JSON.stringify(migratedMapView)}`);
 }
 await clickSelector(".map-view-settings-heading > button");
 
@@ -164,6 +178,13 @@ const transformAfter = await evaluate("document.querySelector('.transform-readou
 if (transformBefore === transformAfter || !transformAfter.includes("5.0°")) {
   throw new Error("Map transform controls did not update");
 }
+await clickText("지도 화면 설정");
+await new Promise((resolve) => setTimeout(resolve, 500));
+const cameraAfterAlignment = await evaluate("document.querySelector('.map-camera-readout').innerText");
+if (cameraAfterAlignment !== restoredMapViewReadout) {
+  throw new Error(`Alignment reset the map camera: ${cameraAfterAlignment}`);
+}
+await clickSelector(".map-view-settings-heading > button");
 await clickText("정합 저장");
 await waitFor("document.querySelector('.alignment-save-status')?.classList.contains('saved')");
 const storedAlignment = await evaluate("localStorage.getItem('seooreung-map-alignment-v1')");

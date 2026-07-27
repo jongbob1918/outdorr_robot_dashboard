@@ -124,15 +124,35 @@ function mapCameraSnapshot(map) {
   };
 }
 
-function isValidMapView(candidate) {
-  return (
-    candidate &&
-    Array.isArray(candidate.center) &&
-    candidate.center.length === 2 &&
-    candidate.center.every(Number.isFinite) &&
-    ["zoom", "bearing"].every((key) => Number.isFinite(candidate[key])) &&
-    (candidate.baseMap === "satellite" || candidate.baseMap === "general")
-  );
+function normalizeMapView(candidate) {
+  if (
+    !candidate ||
+    !Array.isArray(candidate.center) ||
+    candidate.center.length !== 2 ||
+    !candidate.center.every(Number.isFinite) ||
+    !["zoom", "bearing"].every((key) => Number.isFinite(candidate[key])) ||
+    (candidate.baseMap !== "satellite" && candidate.baseMap !== "general")
+  ) {
+    return null;
+  }
+  return {
+    center: [...candidate.center],
+    zoom: candidate.zoom,
+    bearing: candidate.bearing,
+    pitch: Number.isFinite(candidate.pitch) ? candidate.pitch : 0,
+    baseMap: candidate.baseMap,
+    savedAtLabel:
+      typeof candidate.savedAtLabel === "string" ? candidate.savedAtLabel : "",
+  };
+}
+
+function mapCameraOptions(view) {
+  return {
+    center: view.center,
+    zoom: view.zoom,
+    bearing: view.bearing,
+    pitch: Number.isFinite(view.pitch) ? view.pitch : 0,
+  };
 }
 
 const GENERAL_OPACITY_PROPERTIES = {
@@ -742,7 +762,7 @@ function MapCanvas({
           });
 
           if (stateRef.current.savedMapView) {
-            map.jumpTo(stateRef.current.savedMapView);
+            map.jumpTo(mapCameraOptions(stateRef.current.savedMapView));
             appliedSavedViewRef.current = JSON.stringify(
               stateRef.current.savedMapView,
             );
@@ -773,6 +793,16 @@ function MapCanvas({
         map.on("zoomend", () => {
           refreshGrid();
           refreshAerialTiles();
+        });
+        map.on("rotateend", () => {
+          if (stateRef.current.baseMap === "satellite") {
+            map.setMinZoom(
+              Math.abs(map.getBearing()) > 0.05
+                ? Math.max(17, satelliteMinZoomRef.current)
+                : satelliteMinZoomRef.current,
+            );
+          }
+          stateRef.current.onMapViewChange?.(mapCameraSnapshot(map));
         });
         map.on("resize", () => {
           if (stateRef.current.baseMap === "satellite") {
@@ -837,12 +867,7 @@ function MapCanvas({
       appliedSavedViewRef.current = savedKey;
       return;
     }
-    map.jumpTo({
-      center: savedMapView.center,
-      zoom: savedMapView.zoom,
-      bearing: savedMapView.bearing,
-      pitch: savedMapView.pitch ?? 0,
-    });
+    map.jumpTo(mapCameraOptions(savedMapView));
     appliedSavedViewRef.current = savedKey;
     refreshAerialTiles();
   }, [mapReady, refreshAerialTiles, savedMapView]);
@@ -859,23 +884,30 @@ function MapCanvas({
     }
     handledMapCommandRef.current = mapViewCommand.id;
     const duration = 180;
+    const rotateTo = (bearing) => {
+      if (baseMap === "satellite") {
+        map.setMinZoom(
+          Math.abs(bearing) > 0.05
+            ? Math.max(17, satelliteMinZoomRef.current)
+            : satelliteMinZoomRef.current,
+        );
+      }
+      map.easeTo({
+        bearing,
+        zoom:
+          baseMap === "satellite" && Math.abs(bearing) > 0.05
+            ? Math.max(17, map.getZoom())
+            : map.getZoom(),
+        duration: 320,
+      });
+    };
     const commands = {
       "pan-up": () => map.panBy([0, -52], { duration }),
       "pan-down": () => map.panBy([0, 52], { duration }),
       "pan-left": () => map.panBy([-52, 0], { duration }),
       "pan-right": () => map.panBy([52, 0], { duration }),
-      "rotate-left": () =>
-        map.easeTo({
-          bearing: map.getBearing() - 5,
-          zoom: baseMap === "satellite" ? Math.max(17, map.getZoom()) : map.getZoom(),
-          duration: 320,
-        }),
-      "rotate-right": () =>
-        map.easeTo({
-          bearing: map.getBearing() + 5,
-          zoom: baseMap === "satellite" ? Math.max(17, map.getZoom()) : map.getZoom(),
-          duration: 320,
-        }),
+      "rotate-left": () => rotateTo(map.getBearing() - 5),
+      "rotate-right": () => rotateTo(map.getBearing() + 5),
       "zoom-in": () =>
         map.zoomTo(
           Math.min(baseMap === "general" ? 16 : 20, map.getZoom() + 0.5),
@@ -899,7 +931,11 @@ function MapCanvas({
       map.setMaxBounds(null);
       aerialBoundaryMatrixRef.current = null;
     } else {
-      map.setMinZoom(satelliteMinZoomRef.current);
+      map.setMinZoom(
+        Math.abs(map.getBearing()) > 0.05
+          ? Math.max(17, satelliteMinZoomRef.current)
+          : satelliteMinZoomRef.current,
+      );
     }
     refreshAerialTiles();
     const align = toolMode === "align" && overlayVisible ? "visible" : "none";
@@ -956,19 +992,6 @@ function MapCanvas({
         : 0,
     );
 
-    if (toolMode === "align") {
-      const sw = localToLngLat([ROBOT_EXTENT.minX, ROBOT_EXTENT.minY], transform);
-      const ne = localToLngLat([ROBOT_EXTENT.maxX, ROBOT_EXTENT.maxY], transform);
-      map.fitBounds([sw, ne], {
-        padding: {
-          top: 112,
-          right: !sidebarCollapsed ? 396 : 72,
-          bottom: 72,
-          left: 72,
-        },
-        duration: 650,
-      });
-    }
     refreshGrid();
   }, [
     baseMap,
@@ -979,9 +1002,7 @@ function MapCanvas({
     publishing,
     refreshAerialTiles,
     refreshGrid,
-    sidebarCollapsed,
     toolMode,
-    transform,
   ]);
 
   useEffect(() => {
@@ -1029,11 +1050,16 @@ function MapCanvas({
       aerialBoundaryMatrixRef.current = null;
       if (map.getZoom() > 15) map.easeTo({ zoom: 15, duration: 420 });
     } else if (satelliteCameraRef.current) {
-      map.setMinZoom(satelliteMinZoomRef.current);
+      const satelliteBearing = satelliteCameraRef.current.bearing ?? 0;
+      const minimumZoom =
+        Math.abs(satelliteBearing) > 0.05
+          ? Math.max(17, satelliteMinZoomRef.current)
+          : satelliteMinZoomRef.current;
+      map.setMinZoom(minimumZoom);
       map.easeTo({
         ...satelliteCameraRef.current,
         zoom: Math.max(
-          satelliteMinZoomRef.current,
+          minimumZoom,
           satelliteCameraRef.current.zoom,
         ),
         duration: 420,
@@ -1580,11 +1606,18 @@ export default function App() {
       const storedView = JSON.parse(
         window.localStorage.getItem(MAP_VIEW_STORAGE_KEY) ?? "null",
       );
-      if (isValidMapView(storedView)) {
-        setSavedMapView(storedView);
-        setMapViewState(storedView);
-        setMapViewSavedAt(storedView.savedAtLabel ?? "저장값 복원");
-        setBaseMap(storedView.baseMap);
+      const normalizedView = normalizeMapView(storedView);
+      if (normalizedView) {
+        window.localStorage.setItem(
+          MAP_VIEW_STORAGE_KEY,
+          JSON.stringify(normalizedView),
+        );
+        setSavedMapView(normalizedView);
+        setMapViewState(normalizedView);
+        setMapViewSavedAt(normalizedView.savedAtLabel || "저장값 복원");
+        setBaseMap(normalizedView.baseMap);
+      } else if (storedView) {
+        window.localStorage.removeItem(MAP_VIEW_STORAGE_KEY);
       }
     } catch {
       window.localStorage.removeItem(MAP_VIEW_STORAGE_KEY);
@@ -1728,11 +1761,12 @@ export default function App() {
       hour: "2-digit",
       minute: "2-digit",
     }).format(new Date());
-    const nextSavedView = {
+    const nextSavedView = normalizeMapView({
       ...mapViewState,
       baseMap,
       savedAtLabel,
-    };
+    });
+    if (!nextSavedView) return;
     window.localStorage.setItem(
       MAP_VIEW_STORAGE_KEY,
       JSON.stringify(nextSavedView),
