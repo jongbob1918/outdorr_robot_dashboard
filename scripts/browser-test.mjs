@@ -248,10 +248,13 @@ writeFileSync("/tmp/seooreung-event-generator.png", Buffer.from(eventScreenshot.
 await clickText("레이어");
 await clickText("일반");
 await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'general'");
-await waitFor("Number(document.querySelector('.map-controls span')?.textContent) <= 15.1");
+await clickText("지도 확대");
+await clickText("지도 확대");
+await waitFor("Number(document.querySelector('.map-controls span')?.textContent) >= 17");
 await waitFor("Number(document.querySelector('.map-viewport')?.dataset.generalFeatures) > 0", 20_000);
 const generalMap = await evaluate(`({
   baseMap: document.querySelector('.map-viewport').dataset.baseMap,
+  zoom: Number(document.querySelector('.map-controls span').textContent),
   featureCount: Number(document.querySelector('.map-viewport').dataset.generalFeatures),
   externalRequests: performance.getEntriesByType('resource')
     .filter((entry) => entry.name.includes('tiles.openfreemap.org')).length,
@@ -262,6 +265,7 @@ const generalMap = await evaluate(`({
 if (
   generalMap.externalRequests < 1 ||
   generalMap.featureCount < 1 ||
+  generalMap.zoom < 17 ||
   generalMap.checkedLayers !== 3 ||
   generalMap.generalMapOpacity !== "1"
 ) {
@@ -269,6 +273,8 @@ if (
 }
 const generalScreenshot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 writeFileSync("/tmp/seooreung-general-map.png", Buffer.from(generalScreenshot.data, "base64"));
+await clickText("지도 축소");
+await clickText("지도 축소");
 await clickSelector(".layer-switches [role='switch']:nth-child(2)");
 await waitFor(
   "[...document.querySelectorAll('.layer-switches [role=\"switch\"]')].find((button) => button.textContent.includes('로봇 포즈'))?.getAttribute('aria-checked') === 'false'",
@@ -276,6 +282,7 @@ await waitFor(
 await waitFor("document.querySelector('.map-viewport')?.dataset.posePublished === 'hidden'");
 await clickSelector(".base-map-options button:first-child");
 await waitFor("document.querySelector('.map-viewport')?.dataset.baseMap === 'satellite'");
+await new Promise((resolve) => setTimeout(resolve, 500));
 await clickSelector(".layer-control-trigger");
 for (let index = 0; index < 10; index += 1) await clickText("지도 축소");
 await waitFor("document.querySelector('.map-viewport')?.dataset.aerialContained === 'true'");

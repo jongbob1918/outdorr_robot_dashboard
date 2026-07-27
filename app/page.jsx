@@ -1058,7 +1058,7 @@ function MapCanvas({
       "rotate-right": () => rotateTo(map.getBearing() + 5),
       "zoom-in": () =>
         map.zoomTo(
-          Math.min(baseMap === "general" ? 16 : 20, map.getZoom() + 0.5),
+          Math.min(20, map.getZoom() + 0.5),
           { duration },
         ),
       "zoom-out": () => map.zoomTo(Math.max(map.getMinZoom(), map.getZoom() - 0.5), { duration }),
@@ -1192,9 +1192,8 @@ function MapCanvas({
   const zoomBy = (amount) => {
     const map = mapRef.current;
     if (!map) return;
-    const maximumZoom = baseMap === "general" ? 16 : 20;
     map.easeTo({
-      zoom: Math.min(maximumZoom, Math.max(12, map.getZoom() + amount)),
+      zoom: Math.min(20, Math.max(12, map.getZoom() + amount)),
       duration: 220,
     });
     window.setTimeout(refreshAerialTiles, 260);
@@ -1213,7 +1212,6 @@ function MapCanvas({
       map.setMinZoom(12);
       map.setMaxBounds(null);
       aerialBoundaryMatrixRef.current = null;
-      if (map.getZoom() > 15) map.easeTo({ zoom: 15, duration: 420 });
     } else if (satelliteCameraRef.current) {
       const satelliteBearing = satelliteCameraRef.current.bearing ?? 0;
       const aerial = nationalDataRef.current?.aerial;
