@@ -62,6 +62,8 @@ const INITIAL_POSE = { x: -22.4, y: -8.8, yaw: 32 };
 const ALIGNMENT_STORAGE_KEY = "seooreung-map-alignment-v1";
 const MAP_VIEW_STORAGE_KEY = "seooreung-map-view-v1";
 const GENERAL_STYLE_URL = "https://tiles.openfreemap.org/styles/positron";
+const AUTO_DRIVE_SPEED_MPS = 8;
+const TRAIL_RETENTION_MS = 30_000;
 const EMPTY_COLLECTION = { type: "FeatureCollection", features: [] };
 const EPSG_5179 =
   "+proj=tmerc +lat_0=38 +lon_0=127.5 +k=0.9996 +x_0=1000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs";
@@ -265,6 +267,30 @@ function eventGeoJSON(events, transform) {
   };
 }
 
+function trailGeoJSON(samples, transform, now) {
+  return {
+    type: "FeatureCollection",
+    features: samples.slice(1).map((sample, index) => {
+      const previous = samples[index];
+      const age = Math.max(0, now - sample.timestamp);
+      return {
+        type: "Feature",
+        properties: {
+          opacity: Math.max(0.06, 1 - age / TRAIL_RETENTION_MS),
+          age,
+        },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            localToLngLat(previous.point, transform),
+            localToLngLat(sample.point, transform),
+          ],
+        },
+      };
+    }),
+  };
+}
+
 function LayerControl({
   baseMap,
   setBaseMap,
@@ -398,6 +424,9 @@ function MapCanvas({
   forbiddenZones,
   draftZone,
   robotEvents,
+  poseTrail,
+  trailClock,
+  missionStatus,
   savedMapView,
   mapViewCommand,
   onMapViewChange,
@@ -756,6 +785,24 @@ function MapCanvas({
             paint: { "line-color": "#00f0bb", "line-width": 4, "line-opacity": 0.98 },
           });
 
+          addGeoJSONSource(map, "robot-trail");
+          map.addLayer({
+            id: "robot-trail-line",
+            type: "line",
+            source: "robot-trail",
+            layout: {
+              visibility: "visible",
+              "line-cap": "round",
+              "line-join": "round",
+            },
+            paint: {
+              "line-color": "#8cf6dd",
+              "line-width": 3,
+              "line-dasharray": [1.4, 2],
+              "line-opacity": ["coalesce", ["get", "opacity"], 1],
+            },
+          });
+
           addGeoJSONSource(map, "goal-point");
           map.addLayer({
             id: "goal-halo",
@@ -1072,12 +1119,25 @@ function MapCanvas({
     setSourceData(map, "robot-pose", poseGeoJSON(pose, transform));
     setSourceData(map, "robot-heading", headingGeoJSON(pose, transform));
     setSourceData(map, "robot-events", eventGeoJSON(robotEvents, transform));
+    setSourceData(map, "robot-trail", trailGeoJSON(poseTrail, transform, trailClock));
     setSourceData(map, "planned-route", routeGeoJSON(path, transform));
     setSourceData(map, "goal-point", pointGeoJSON(goal, transform));
     setSourceData(map, "forbidden-zones", forbiddenGeoJSON(forbiddenZones, transform, draftZone));
     setSourceData(map, "draft-points", draftPointsGeoJSON(draftZone, transform));
     refreshGrid();
-  }, [draftZone, forbiddenZones, goal, mapReady, path, pose, refreshGrid, robotEvents, transform]);
+  }, [
+    draftZone,
+    forbiddenZones,
+    goal,
+    mapReady,
+    path,
+    pose,
+    poseTrail,
+    refreshGrid,
+    robotEvents,
+    trailClock,
+    transform,
+  ]);
 
   useEffect(() => {
     if (!mapRef.current) return;
@@ -1162,6 +1222,19 @@ function MapCanvas({
       data-satellite-min-zoom={satelliteMinZoomRef.current.toFixed(2)}
       data-general-map-opacity={baseMap === "satellite" ? "0" : "1"}
       data-event-count={robotEvents.length}
+      data-pose-x={pose.x.toFixed(3)}
+      data-pose-y={pose.y.toFixed(3)}
+      data-trail-count={poseTrail.length}
+      data-trail-style="dashed-time-fade"
+      data-trail-oldest-opacity={
+        poseTrail.length > 1
+          ? Math.max(
+              0.06,
+              1 - Math.max(0, trailClock - poseTrail[1].timestamp) / TRAIL_RETENTION_MS,
+            ).toFixed(3)
+          : "0"
+      }
+      data-mission-status={missionStatus}
     >
       <img
         ref={lowZoomAerialRef}
@@ -1245,7 +1318,11 @@ function MapCanvas({
               : "POSE STREAM · STANDBY"
             : toolMode === "events"
               ? `EVENT TEST · ${robotEvents.length}`
-              : "A* MISSION EDITOR"}
+              : missionStatus === "moving"
+                ? "A* AUTO DRIVE · MOVING"
+                : missionStatus === "arrived"
+                  ? "A* AUTO DRIVE · ARRIVED"
+                  : "A* MISSION EDITOR"}
       </div>
 
       <div className="national-attribution">
@@ -1447,6 +1524,7 @@ function SimulatorSidebar({
   setPublishing,
   sequence,
   path,
+  previewPath,
   goal,
   forbiddenZones,
   transform,
@@ -1471,6 +1549,7 @@ function SimulatorSidebar({
   startEventGenerator,
   stopEventGenerator,
   clearEvents,
+  missionStatus,
 }) {
   return (
     <aside className={`simulator-panel ${collapsed ? "collapsed" : ""}`}>
@@ -1510,7 +1589,12 @@ function SimulatorSidebar({
             </button>
           </nav>
 
-          <RobotMapPreview pose={pose} path={path} goal={goal} forbiddenZones={forbiddenZones} />
+          <RobotMapPreview
+            pose={pose}
+            path={previewPath}
+            goal={goal}
+            forbiddenZones={forbiddenZones}
+          />
 
           {toolMode === "align" && (
             <TransformEditor
@@ -1575,6 +1659,7 @@ function SimulatorSidebar({
               cancelMode={cancelMode}
               deleteZone={deleteZone}
               clearMission={clearMission}
+              missionStatus={missionStatus}
             />
           )}
 
@@ -1609,7 +1694,11 @@ function SimulatorSidebar({
                       ? eventGeneratorRunning
                         ? `RUNNING · ${robotEvents.length} EVENTS`
                         : `STOPPED · ${robotEvents.length} EVENTS`
-                      : path.length > 1 ? "ROUTE READY" : "WAITING TARGET"}
+                      : missionStatus === "moving"
+                        ? "AUTO DRIVE · MOVING"
+                        : missionStatus === "arrived"
+                          ? "TARGET ARRIVED"
+                          : path.length > 1 ? "ROUTE READY" : "WAITING TARGET"}
               </b>
             </span>
             <i className={publishing || path.length > 1 || eventGeneratorRunning ? "live" : ""} />
@@ -1663,6 +1752,7 @@ function MissionTools({
   cancelMode,
   deleteZone,
   clearMission,
+  missionStatus,
 }) {
   return (
     <div className="mission-tools">
@@ -1692,6 +1782,20 @@ function MissionTools({
       </div>
       <div className="mission-summary">
         <span><small>A* PATH</small><b data-testid="path-status">{path.length > 1 ? `${path.length} WAYPOINTS` : goal ? "NO PATH" : "READY"}</b></span>
+        <span>
+          <small>DRIVE</small>
+          <b data-testid="mission-status">
+            {missionStatus === "moving"
+              ? "이동 중"
+              : missionStatus === "arrived"
+                ? "목표 도착"
+                : missionStatus === "blocked"
+                  ? "경로 없음"
+                  : missionStatus === "stopped"
+                    ? "이동 중단"
+                    : "대기"}
+          </b>
+        </span>
         <span><small>NO-GO ZONES</small><b data-testid="zone-count">{forbiddenZones.length}</b></span>
         {draftZone.length > 0 && <span><small>VERTICES</small><b>{draftZone.length}</b></span>}
       </div>
@@ -1715,6 +1819,11 @@ export default function App() {
   const [interactionMode, setInteractionMode] = useState("");
   const [goal, setGoal] = useState(null);
   const [path, setPath] = useState([]);
+  const [remainingPath, setRemainingPath] = useState([]);
+  const [missionStatus, setMissionStatus] = useState("idle");
+  const [poseTrail, setPoseTrail] = useState([]);
+  const [trailClock, setTrailClock] = useState(() => Date.now());
+  const poseRef = useRef(INITIAL_POSE);
   const [forbiddenZones, setForbiddenZones] = useState([]);
   const [draftZone, setDraftZone] = useState([]);
   const [baseMap, setBaseMap] = useState("satellite");
@@ -1791,6 +1900,7 @@ export default function App() {
   }, [baseMap, mapViewState, savedMapView]);
 
   const moveRobot = useCallback((action) => {
+    setMissionStatus("stopped");
     setPose((current) => {
       const radians = (current.yaw * Math.PI) / 180;
       const distance = 0.5;
@@ -1814,6 +1924,18 @@ export default function App() {
       if (action === "turn-left") next.yaw -= 5;
       if (action === "turn-right") next.yaw += 5;
       next.yaw = ((next.yaw + 180) % 360 + 360) % 360 - 180;
+      poseRef.current = next;
+      if (
+        Math.hypot(next.x - current.x, next.y - current.y) > 0.01
+      ) {
+        const timestamp = Date.now();
+        setPoseTrail((trail) => [
+          ...(trail.length
+            ? trail
+            : [{ point: [current.x, current.y], timestamp }]),
+          { point: [next.x, next.y], timestamp },
+        ].slice(-400));
+      }
       return next;
     });
   }, []);
@@ -1856,6 +1978,96 @@ export default function App() {
   }, [eventGeneratorRunning, generateRandomEvent]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setTrailClock(now);
+      setPoseTrail((trail) =>
+        trail.filter((sample) => now - sample.timestamp <= TRAIL_RETENTION_MS),
+      );
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (missionStatus !== "moving" || path.length < 2) return undefined;
+    let waypointIndex = 1;
+    let previousTick = performance.now();
+    let lastTrailSampleAt = 0;
+    const startedAt = Date.now();
+    setPoseTrail((trail) => [
+      ...trail,
+      {
+        point: [poseRef.current.x, poseRef.current.y],
+        timestamp: startedAt,
+      },
+    ].slice(-400));
+
+    const timer = window.setInterval(() => {
+      const tick = performance.now();
+      let remaining =
+        AUTO_DRIVE_SPEED_MPS * Math.min(0.15, (tick - previousTick) / 1000);
+      previousTick = tick;
+      const next = { ...poseRef.current };
+      let arrived = false;
+
+      while (remaining > 0 && waypointIndex < path.length) {
+        const target = path[waypointIndex];
+        const dx = target[0] - next.x;
+        const dy = target[1] - next.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance < 1e-6) {
+          waypointIndex += 1;
+          continue;
+        }
+        next.yaw = (Math.atan2(dx, dy) * 180) / Math.PI;
+        if (distance <= remaining) {
+          next.x = target[0];
+          next.y = target[1];
+          remaining -= distance;
+          waypointIndex += 1;
+          arrived = waypointIndex >= path.length;
+        } else {
+          next.x += (dx / distance) * remaining;
+          next.y += (dy / distance) * remaining;
+          remaining = 0;
+        }
+      }
+
+      poseRef.current = next;
+      setPose(next);
+      setRemainingPath(
+        arrived
+          ? []
+          : [[next.x, next.y], ...path.slice(waypointIndex)],
+      );
+      const timestamp = Date.now();
+      if (timestamp - lastTrailSampleAt >= 120 || arrived) {
+        lastTrailSampleAt = timestamp;
+        setPoseTrail((trail) => {
+          const last = trail.at(-1);
+          if (
+            last &&
+            Math.hypot(last.point[0] - next.x, last.point[1] - next.y) < 0.08
+          ) {
+            return trail;
+          }
+          return [
+            ...trail,
+            { point: [next.x, next.y], timestamp },
+          ].slice(-400);
+        });
+      }
+
+      if (arrived) {
+        window.clearInterval(timer);
+        setMissionStatus("arrived");
+      }
+    }, 50);
+
+    return () => window.clearInterval(timer);
+  }, [missionStatus, path]);
+
+  useEffect(() => {
     if (toolMode === "align") return undefined;
     const handleKeyDown = (event) => {
       const key = event.key.toLowerCase();
@@ -1874,10 +2086,6 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
     };
   }, [keyActions, moveRobot, toolMode]);
-
-  useEffect(() => {
-    if (goal) setPath(planAStar([pose.x, pose.y], goal, forbiddenZones));
-  }, [forbiddenZones, goal, pose.x, pose.y]);
 
   const shiftTransform = useCallback((east, north) => {
     setTransform((current) => ({
@@ -1965,29 +2173,66 @@ export default function App() {
   const handleCoordinateClick = useCallback((point) => {
     if (interactionMode === "goal") {
       const nextGoal = point.map((value) => Number(value.toFixed(2)));
+      const nextPath = planAStar(
+        [poseRef.current.x, poseRef.current.y],
+        nextGoal,
+        forbiddenZones,
+      );
       setGoal(nextGoal);
-      setPath(planAStar([pose.x, pose.y], nextGoal, forbiddenZones));
+      setPath(nextPath);
+      setRemainingPath(nextPath);
+      setMissionStatus(nextPath.length > 1 ? "moving" : "blocked");
       setInteractionMode("");
     } else if (interactionMode === "forbidden") {
       setDraftZone((current) => [...current, point.map((value) => Number(value.toFixed(2)))]);
     }
-  }, [forbiddenZones, interactionMode, pose.x, pose.y]);
+  }, [forbiddenZones, interactionMode]);
 
   const finishZone = () => {
     if (draftZone.length < 3) return;
-    setForbiddenZones((zones) => [...zones, draftZone]);
+    const nextZones = [...forbiddenZones, draftZone];
+    setForbiddenZones(nextZones);
+    if (goal) {
+      const nextPath = planAStar(
+        [poseRef.current.x, poseRef.current.y],
+        goal,
+        nextZones,
+      );
+      setPath(nextPath);
+      setRemainingPath(nextPath);
+      setMissionStatus(nextPath.length > 1 ? "moving" : "blocked");
+    }
     setDraftZone([]);
     setInteractionMode("");
   };
 
+  const deleteLatestZone = () => {
+    const nextZones = forbiddenZones.slice(0, -1);
+    setForbiddenZones(nextZones);
+    if (goal) {
+      const nextPath = planAStar(
+        [poseRef.current.x, poseRef.current.y],
+        goal,
+        nextZones,
+      );
+      setPath(nextPath);
+      setRemainingPath(nextPath);
+      setMissionStatus(nextPath.length > 1 ? "moving" : "blocked");
+    }
+  };
+
   const resetPose = () => {
     setPose(INITIAL_POSE);
+    poseRef.current = INITIAL_POSE;
+    setMissionStatus("stopped");
     setSequence(0);
   };
 
   const clearMission = () => {
+    setMissionStatus("idle");
     setGoal(null);
     setPath([]);
+    setRemainingPath([]);
     setDraftZone([]);
     setInteractionMode("");
   };
@@ -2039,11 +2284,14 @@ export default function App() {
           sidebarCollapsed={sidebarCollapsed}
           interactionMode={interactionMode}
           onCoordinateClick={handleCoordinateClick}
-          path={path}
+          path={remainingPath}
           goal={goal}
           forbiddenZones={forbiddenZones}
           draftZone={draftZone}
           robotEvents={robotEvents}
+          poseTrail={poseTrail}
+          trailClock={trailClock}
+          missionStatus={missionStatus}
           savedMapView={savedMapView}
           mapViewCommand={mapViewCommand}
           onMapViewChange={setMapViewState}
@@ -2060,6 +2308,7 @@ export default function App() {
           setPublishing={setPublishing}
           sequence={sequence}
           path={path}
+          previewPath={remainingPath}
           goal={goal}
           forbiddenZones={forbiddenZones}
           transform={transform}
@@ -2083,13 +2332,14 @@ export default function App() {
             setDraftZone([]);
             setInteractionMode("");
           }}
-          deleteZone={() => setForbiddenZones((zones) => zones.slice(0, -1))}
+          deleteZone={deleteLatestZone}
           clearMission={clearMission}
           robotEvents={robotEvents}
           eventGeneratorRunning={eventGeneratorRunning}
           startEventGenerator={() => setEventGeneratorRunning(true)}
           stopEventGenerator={() => setEventGeneratorRunning(false)}
           clearEvents={() => setRobotEvents([])}
+          missionStatus={missionStatus}
         />
       </div>
 

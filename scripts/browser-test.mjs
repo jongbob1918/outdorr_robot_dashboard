@@ -300,8 +300,50 @@ writeFileSync("/tmp/seooreung-satellite-boundary.png", Buffer.from(boundaryScree
 
 await clickText("임무 편집");
 await clickText("목표 지정");
+const poseBeforeMission = await evaluate(`({
+  x: Number(document.querySelector('.map-viewport').dataset.poseX),
+  y: Number(document.querySelector('.map-viewport').dataset.poseY),
+})`);
 await mouseClick(520, 420);
 await waitFor("document.querySelector('[data-testid=\"path-status\"]')?.textContent.includes('WAYPOINTS')");
+await waitFor("Number(document.querySelector('.map-viewport')?.dataset.trailCount) >= 2");
+await waitFor(`(() => {
+  const viewport = document.querySelector('.map-viewport');
+  return Math.hypot(
+    Number(viewport.dataset.poseX) - ${poseBeforeMission.x},
+    Number(viewport.dataset.poseY) - ${poseBeforeMission.y}
+  ) > 0.5;
+})()`);
+const autonomousMotion = await evaluate(`({
+  status: document.querySelector('.map-viewport').dataset.missionStatus,
+  poseX: Number(document.querySelector('.map-viewport').dataset.poseX),
+  poseY: Number(document.querySelector('.map-viewport').dataset.poseY),
+  trailCount: Number(document.querySelector('.map-viewport').dataset.trailCount),
+  trailStyle: document.querySelector('.map-viewport').dataset.trailStyle,
+  oldestOpacity: Number(document.querySelector('.map-viewport').dataset.trailOldestOpacity),
+})`);
+await new Promise((resolve) => setTimeout(resolve, 1_100));
+const fadedTrailOpacity = Number(
+  await evaluate("document.querySelector('.map-viewport').dataset.trailOldestOpacity"),
+);
+if (
+  !["moving", "arrived"].includes(autonomousMotion.status) ||
+  autonomousMotion.trailStyle !== "dashed-time-fade" ||
+  autonomousMotion.trailCount < 2 ||
+  fadedTrailOpacity >= autonomousMotion.oldestOpacity
+) {
+  throw new Error(
+    `Autonomous motion or time-faded trail failed: ${JSON.stringify({ autonomousMotion, fadedTrailOpacity })}`,
+  );
+}
+const motionScreenshot = await command("Page.captureScreenshot", {
+  format: "png",
+  captureBeyondViewport: false,
+});
+writeFileSync(
+  "/tmp/seooreung-autonomous-motion.png",
+  Buffer.from(motionScreenshot.data, "base64"),
+);
 
 await clickText("금지구역");
 await mouseClick(712, 488);
@@ -314,11 +356,17 @@ await clickText("임무 종료");
 await waitFor("document.querySelector('[data-testid=\"path-status\"]')?.textContent.trim() === 'READY'");
 const missionEnded = await evaluate(`({
   path: document.querySelector('[data-testid="path-status"]').textContent.trim(),
+  status: document.querySelector('.map-viewport').dataset.missionStatus,
   previewRoute: Boolean(document.querySelector('.preview-route')),
   previewGoal: Boolean(document.querySelector('.preview-goal')),
   endButton: [...document.querySelectorAll('button')].some((button) => button.textContent.includes('임무 종료')),
 })`);
-if (missionEnded.previewRoute || missionEnded.previewGoal || missionEnded.endButton) {
+if (
+  missionEnded.status !== "idle" ||
+  missionEnded.previewRoute ||
+  missionEnded.previewGoal ||
+  missionEnded.endButton
+) {
   throw new Error(`Mission did not clear: ${JSON.stringify(missionEnded)}`);
 }
 
@@ -350,6 +398,8 @@ console.log(JSON.stringify({
   sequenceDelta: sequenceAfter - sequenceBefore,
   generalMap,
   satelliteBoundary,
+  autonomousMotion,
+  fadedTrailOpacity,
   missionEnded,
   highResolution,
 }, null, 2));
